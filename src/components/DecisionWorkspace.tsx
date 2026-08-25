@@ -70,7 +70,7 @@ export default function DecisionWorkspace({
 
         <button type="button" className="ws__title" onClick={onOpenJourney}>
           <span className="ws__title-text">{journey.title}</span>
-          {/* LOCK does not know how many decisions a journey will hold, so this
+          {/* Lock does not know how many decisions a journey will hold, so this
               counts what has been settled rather than faking a total. Hidden
               until there is actually something to show. */}
           {confirmedCount > 0 && (

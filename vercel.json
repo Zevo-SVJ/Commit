@@ -6,6 +6,9 @@
   "functions": {
     "api/decision.ts": {
       "maxDuration": 30
+    },
+    "api/health.ts": {
+      "maxDuration": 10
     }
   }
 }

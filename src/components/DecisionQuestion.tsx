@@ -14,7 +14,7 @@ interface Props {
   onAnswer: (text: string) => void
 }
 
-/** One question. LOCK only reaches this screen when the answer would change something. */
+/** One question. Lock only reaches this screen when the answer would change something. */
 export default function DecisionQuestion({ step, onAnswer }: Props) {
   const [writing, setWriting] = useState(step.options.length === 0)
   const [text, setText] = useState('')

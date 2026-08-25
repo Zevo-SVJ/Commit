@@ -1,22 +1,33 @@
 import type { Plugin } from 'vite'
-import { serveDecision } from './http.ts'
 
 /**
- * Mounts the API inside `vite dev`, so local development is a single command
- * and exercises exactly the same handler as production.
+ * Mounts the API inside `vite dev` and `vite preview`.
+ *
+ * The handler is loaded through Vite's own module runner rather than imported
+ * at the top of this file: the config is bundled by esbuild, which would have
+ * to resolve the server's TypeScript specifiers itself. Going through
+ * `ssrLoadModule` keeps that resolution where it belongs and hot-reloads the
+ * server code between requests.
  */
 export function lockApi(): Plugin {
+  const mount = (server: { middlewares: any; ssrLoadModule: (id: string) => Promise<any> }) => {
+    server.middlewares.use('/api/decision', (req: any, res: any, next: any) => {
+      server
+        .ssrLoadModule('/server/http.ts')
+        .then((mod) => mod.serveDecision(req, res))
+        .catch(next)
+    })
+  }
+
   return {
     name: 'lock-api',
-    configureServer(server) {
-      server.middlewares.use('/api/decision', (req, res, next) => {
-        serveDecision(req, res).catch(next)
-      })
-    },
-    // `vite preview` serves the production bundle; keep the API alive there too.
+    configureServer: mount,
     configurePreviewServer(server) {
-      server.middlewares.use('/api/decision', (req, res, next) => {
-        serveDecision(req, res).catch(next)
+      // `vite preview` has no module runner, so serve the built handler.
+      server.middlewares.use('/api/decision', (req: any, res: any, next: any) => {
+        import('./http.js')
+          .then((mod) => mod.serveDecision(req, res))
+          .catch(next)
       })
     },
   }

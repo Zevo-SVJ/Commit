@@ -1,6 +1,6 @@
-# LOCK
+# Lock
 
-A decision instrument. You bring something you are unsure about; LOCK finds the
+A decision instrument. You bring something you are unsure about; Lock finds the
 decision inside it, strips away what does not matter, and puts that decision in
 front of you to commit to.
 
@@ -12,7 +12,7 @@ It is a web app. Not a chatbot, and not a native app.
 
 ## Running it
 
-LOCK needs one secret. It is read on the server only.
+Lock needs one secret. It is read on the server only.
 
 ```bash
 cp .env.example .env      # add your OPENAI_API_KEY
@@ -51,6 +51,41 @@ do.
 | `LOCK_MODEL` | no | Defaults to `gpt-4.1`. |
 | `OPENAI_BASE_URL` | no | For a gateway or regional endpoint. |
 
+## If a deployment is not working
+
+`/api/health` answers with no imports and no model call. Open it first:
+
+```
+https://<your-deployment>/api/health
+```
+
+It reports whether a key reached the runtime, its length and prefix (never the
+key), whether it has stray whitespace, the model, the Node version, and the
+commit that is live. If `/api/health` answers and `/api/decision` does not, the
+fault is in the decision function's module graph rather than in routing.
+
+**Environment variables only apply to deployments made after they were added.**
+Adding `OPENAI_API_KEY` to an existing project does nothing until you redeploy —
+`key.present: false` on a live `/api/health` is that, almost every time.
+
+The error screen carries a Details line naming where the request broke: the
+status, whether a web page came back instead of JSON, and the failing stage. It
+contains no key and no journey content.
+
+| What you see | What it means |
+| --- | --- |
+| `not_found` · HTTP 404 | `/api/decision` is not deployed |
+| `unreachable` · HTTP 5xx + web page | the function crashed before answering |
+| `server_boot` | the function ran but could not load its own modules |
+| `unconfigured` | no key reached the runtime — redeploy after adding it |
+| `upstream` | the model rejected or failed the request; the reason is in the function logs |
+| `invalid_response` | the model answered, but not with a usable turn |
+| `timeout` | no reply within 25s |
+| `offline` | the request never left the browser |
+
+Function logs: Vercel → your project → **Logs**, filter to `/api/decision`.
+Lines are prefixed `[lock]`.
+
 ## Architecture
 
 ```
@@ -61,7 +96,7 @@ src/           the client. Renders what the server sends; never calls a model.
 shared/types.ts  the contract both sides import
 server/
   handler.ts     host-agnostic core — every adapter calls exactly this
-  ai/prompt.ts   LOCK's system prompt
+  ai/prompt.ts   Lock's system prompt
   ai/schema.ts   the structured-output schema, and the validator we actually trust
   ai/provider.ts the OpenAI Responses API, over plain fetch
 api/decision.ts  Vercel adapter
@@ -74,7 +109,7 @@ and the standalone Node server all call `handleTurn`.
 
 Two things enforce it. The prompt forbids restating the user's own words, and
 the response schema has **no field whose only content is commentary** — every
-line LOCK says rides along with a question or a decision. If it has nothing to
+line Lock says rides along with a question or a decision. If it has nothing to
 add, `framing` is null and nothing renders. Silence is the default.
 
 Underneath that, `understanding` is rewritten from scratch on every turn rather
@@ -130,7 +165,7 @@ closest available proxy.
 
 ### Disagreeing
 
-`understanding.contradiction` is the one place LOCK pushes back. It is surfaced
+`understanding.contradiction` is the one place Lock pushes back. It is surfaced
 to the user on the turn it first appears and not repeated afterwards, and it is
 styled apart from ordinary framing so it does not read as commentary.
 

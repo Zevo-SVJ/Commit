@@ -367,7 +367,7 @@
   box-shadow: inset 0 0 0 1px var(--hair);
 }
 
-/* ---- LOCK's one line of framing ---------------------------------- */
+/* ---- Lock's one line of framing ---------------------------------- */
 
 .framings {
   display: flex;
@@ -394,7 +394,7 @@
   background: var(--seal-dim);
 }
 
-/* LOCK pushing back reads brighter than LOCK framing — it is the one moment
+/* Lock pushing back reads brighter than Lock framing — it is the one moment
    the product disagrees, and it should not be mistaken for commentary. */
 .framing--tension {
   color: var(--ink);

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { handleTurn } from './handler.ts'
+import { handleTurn } from './handler.js'
 
 /** Shared Node HTTP glue for the dev server and the standalone server. */
 

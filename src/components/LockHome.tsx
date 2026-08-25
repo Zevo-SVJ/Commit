@@ -4,7 +4,7 @@ import DecisionInput from './DecisionInput'
 import '../styles/home.css'
 
 /**
- * Two situations that show what LOCK takes: one stated plainly, one with the
+ * Two situations that show what Lock takes: one stated plainly, one with the
  * detail already in it. They fill the field so the user can edit before
  * sending — nothing here is scripted, both run through the same reasoning as
  * anything else typed by hand.
@@ -34,7 +34,7 @@ export default function LockHome({ onStart }: Props) {
   return (
     <div className="screen home">
       <header className="home__mark">
-        <span>LOCK</span>
+        <span>Lock</span>
       </header>
 
       <div className="screen__body home__body">

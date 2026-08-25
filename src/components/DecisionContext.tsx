@@ -2,18 +2,18 @@ import { motion } from 'framer-motion'
 
 interface Props {
   framing: string | null
-  /** A tension LOCK has found between what the user wants and what they said. */
+  /** A tension Lock has found between what the user wants and what they said. */
   contradiction?: string | null
 }
 
 /**
- * LOCK's voice above a question or a decision.
+ * Lock's voice above a question or a decision.
  *
- * There is deliberately no screen whose only content is this. If LOCK has
+ * There is deliberately no screen whose only content is this. If Lock has
  * nothing to add that the user did not already say, the server sends null and
  * nothing renders — silence is the normal state.
  *
- * A contradiction is the one time LOCK pushes back, so it is marked differently
+ * A contradiction is the one time Lock pushes back, so it is marked differently
  * from ordinary framing and appears only on the turn it is found.
  */
 export default function DecisionContext({ framing, contradiction = null }: Props) {

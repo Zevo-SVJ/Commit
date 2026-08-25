@@ -1,5 +1,5 @@
-import { SYSTEM_PROMPT } from './prompt.ts'
-import { TURN_JSON_SCHEMA } from './schema.ts'
+import { SYSTEM_PROMPT } from './prompt.js'
+import { TURN_JSON_SCHEMA } from './schema.js'
 
 /**
  * The OpenAI Responses API, called directly over fetch.
@@ -57,9 +57,11 @@ export function createOpenAIProvider(env: NodeJS.ProcessEnv = process.env): Prov
           model: env.LOCK_MODEL || DEFAULT_MODEL,
           instructions: SYSTEM_PROMPT,
           input: [{ role: 'user', content: `${req.brief}\n\n${req.instruction}` }],
-          // Deliberately low: LOCK should be consistent, not creative.
+          // Deliberately low: Lock should be consistent, not creative.
           temperature: 0.35,
-          max_output_tokens: 900,
+          // The schema is large; too low a cap truncates the JSON mid-object
+          // and the turn is discarded as unparseable.
+          max_output_tokens: 1600,
           text: {
             format: {
               type: 'json_schema',
@@ -83,15 +85,23 @@ export function createOpenAIProvider(env: NodeJS.ProcessEnv = process.env): Prov
       if (res.status === 401 || res.status === 403) {
         throw new ProviderError('model rejected the credentials', 'unconfigured', res.status)
       }
-      // Body is logged server-side only; it never reaches the client.
+      // Body is logged server-side only; it never reaches the client. The
+      // provider's own message is the fastest way to spot a rejected schema
+      // or an unknown model name.
       throw new ProviderError(
-        `model returned ${res.status}: ${body.slice(0, 300)}`,
+        `model returned ${res.status}: ${body.slice(0, 500)}`,
         'upstream',
         res.status,
       )
     }
 
     const payload = (await res.json()) as Record<string, unknown>
+
+    // A run cut short by the token cap yields valid-looking but partial JSON.
+    if (payload.status === 'incomplete') {
+      const reason = (payload.incomplete_details as { reason?: string } | undefined)?.reason
+      throw new ProviderError(`model stopped early (${reason ?? 'unknown'})`, 'upstream')
+    }
     return extractJson(payload)
   }
 }

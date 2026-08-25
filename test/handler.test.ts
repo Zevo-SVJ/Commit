@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { handleTurn, buildBrief } from '../server/handler.ts'
-import { parseTurn, InvalidModelOutput } from '../server/ai/schema.ts'
-import { extractJson, ProviderError, type Provider } from '../server/ai/provider.ts'
-import type { DecisionJourney, TurnResponse } from '../shared/types.ts'
+import { handleTurn, buildBrief } from '../server/handler.js'
+import { parseTurn, InvalidModelOutput } from '../server/ai/schema.js'
+import { extractJson, ProviderError, type Provider } from '../server/ai/provider.js'
+import type { DecisionJourney, TurnResponse } from '../shared/types.js'
 
 /** A provider that returns whatever the test hands it. No model involved. */
 const scripted = (value: unknown): Provider => async () => value
@@ -340,7 +340,7 @@ test('response payloads are unwrapped from either Responses API shape', () => {
 /* ---- the confirmation sequence -------------------------------------- */
 
 test('the confirmation sequence is designed to run 1.2-1.8s', async () => {
-  const { CONFIRM, CONFIRM_REDUCED, confirmTotal } = await import('../src/lib/timing.ts')
+  const { CONFIRM, CONFIRM_REDUCED, confirmTotal } = await import('../src/lib/timing.js')
   const total = confirmTotal(CONFIRM)
   assert.ok(total >= 1200 && total <= 1800, `${total}ms`)
   // Every phase must be long enough to be perceived as its own beat.
@@ -348,7 +348,7 @@ test('the confirmation sequence is designed to run 1.2-1.8s', async () => {
     assert.ok(ms >= 140, `${name} is ${ms}ms — too short to register`)
   }
   // The message must be legible at full opacity, not merely fading in.
-  const { messageDwell } = await import('../src/lib/timing.ts')
+  const { messageDwell } = await import('../src/lib/timing.js')
   assert.ok(
     CONFIRM.message - CONFIRM.messageFade >= 400,
     `only ${CONFIRM.message - CONFIRM.messageFade}ms at full opacity`,

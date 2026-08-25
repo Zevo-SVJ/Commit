@@ -1,5 +1,5 @@
 /**
- * The contract between the LOCK client and the LOCK server.
+ * The contract between the Lock client and the Lock server.
  *
  * Both sides import this file. The server is the only thing that talks to a
  * model, and it never returns anything that has not been validated against
@@ -28,13 +28,13 @@ export interface Decision {
 }
 
 /**
- * What LOCK currently believes. Rewritten by the model each turn rather than
+ * What Lock currently believes. Rewritten by the model each turn rather than
  * appended to, so the journey compresses as it goes instead of accumulating.
  */
 export interface Understanding {
   /** The single thing the user is trying to resolve. */
   objective: string
-  /** Facts that matter, in LOCK's words, not the user's. */
+  /** Facts that matter, in Lock's words, not the user's. */
   known: string[]
   /** Things still unknown that could matter. */
   openQuestions: string[]
@@ -44,7 +44,7 @@ export interface Understanding {
   contradiction: string | null
 }
 
-/** One question LOCK asked, and what the user actually said back. */
+/** One question Lock asked, and what the user actually said back. */
 export interface Exchange {
   question: string
   answer: string
@@ -57,7 +57,7 @@ export interface DecisionJourney {
   title: string
   understanding: Understanding
   /**
-   * Verbatim, uncompressed, and capped. `understanding.known` is LOCK's
+   * Verbatim, uncompressed, and capped. `understanding.known` is Lock's
    * compressed read and can legitimately drop things; this is the guarantee
    * that a question is never asked twice and that nothing the user said is
    * silently lost when the model rewrites its own notes.
@@ -73,7 +73,7 @@ export interface DecisionJourney {
   nextStep: string
   /** 0..1. How resolved the journey is. May fall when new information lands. */
   progress: number
-  /** 0..1. How sure LOCK is about its own read. */
+  /** 0..1. How sure Lock is about its own read. */
   confidence: number
   status: JourneyStatus
   createdAt: number
@@ -90,12 +90,12 @@ export interface QuestionStep {
   prompt: string
   /**
    * A tension between what the user wants and what they have told us. Shown
-   * once, when it first appears — LOCK disagreeing, not nagging.
+   * once, when it first appears — Lock disagreeing, not nagging.
    */
   contradiction: string | null
   /**
    * At most one sentence of new framing, shown above the question. Null unless
-   * LOCK has something to add that the user did not already say.
+   * Lock has something to add that the user did not already say.
    */
   framing: string | null
   /** Tappable answers. May be empty when the question needs prose. */
@@ -141,12 +141,24 @@ export interface TurnResponse {
 }
 
 export type ApiErrorCode =
+  /** No key reached the server. */
   | 'unconfigured'
   | 'rate_limited'
   | 'timeout'
   | 'upstream'
+  /** The model answered, but not with a usable turn. */
   | 'invalid_response'
   | 'bad_request'
+  /** The function could not load its own modules. */
+  | 'server_boot'
+  /** The function threw before it could answer. */
+  | 'server_crash'
+  /** /api/decision is not deployed. */
+  | 'not_found'
+  /** Something answered, but it was not our handler. */
+  | 'unreachable'
+  /** The request never left the browser. */
+  | 'offline'
 
 export interface ApiError {
   error: {
@@ -154,5 +166,7 @@ export interface ApiError {
     /** Safe to show a user. Never contains provider detail or key material. */
     message: string
     retryable: boolean
+    /** One line naming where it broke. No secrets, no journey content. */
+    detail?: string
   }
 }

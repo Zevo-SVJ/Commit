@@ -9,7 +9,7 @@ interface Props {
 }
 
 /**
- * A decision the user raises themselves. It goes next, ahead of whatever LOCK
+ * A decision the user raises themselves. It goes next, ahead of whatever Lock
  * was planning — their concern outranks the sequence.
  */
 export default function AddDecisionSheet({ open, onClose, onAdd }: Props) {

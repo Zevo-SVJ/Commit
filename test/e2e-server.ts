@@ -8,8 +8,8 @@
 import { createServer } from 'node:http'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
-import { handleTurn } from '../server/handler.ts'
-import { ProviderError, type Provider } from '../server/ai/provider.ts'
+import { handleTurn } from '../server/handler.js'
+import { ProviderError, type Provider } from '../server/ai/provider.js'
 
 const PORT = Number(process.env.PORT ?? 4300)
 const ROOT = join(process.cwd(), 'dist')
@@ -137,6 +137,19 @@ createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/decision') {
+    // Reproduces what a misconfigured deployment actually returns: HTML, not
+    // JSON — the SPA fallback for a missing function, or a platform error page.
+    if (mode === 'html404' || mode === 'html500') {
+      res.writeHead(mode === 'html404' ? 404 : 500, { 'content-type': 'text/html' })
+      res.end('<!doctype html><html><body>The page could not be found</body></html>')
+      return
+    }
+    if (mode === 'empty') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('')
+      return
+    }
+
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null

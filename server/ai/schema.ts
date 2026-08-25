@@ -64,8 +64,10 @@ export const TURN_JSON_SCHEMA = {
         contradiction: { type: ['string', 'null'] },
       },
     },
-    progress: { type: 'number', minimum: 0, maximum: 1 },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    // No `minimum`/`maximum`: strict structured outputs reject numeric range
+    // keywords outright. The bounds are enforced by `unit()` below instead.
+    progress: { type: 'number' },
+    confidence: { type: 'number' },
     step: {
       type: 'object',
       additionalProperties: false,
@@ -95,7 +97,9 @@ export const TURN_JSON_SCHEMA = {
         commitment: { type: ['string', 'null'] },
         rationale: { type: ['string', 'null'] },
         isFinal: { type: ['boolean', 'null'] },
-        importance: { type: ['string', 'null'], enum: ['pivotal', 'standard', null] },
+        // A nullable enum is the shakiest construct in the supported subset,
+        // so this is a plain nullable string and the value is narrowed below.
+        importance: { type: ['string', 'null'] },
         // Only meaningful when kind is "complete".
         closing: { type: ['string', 'null'] },
         framing: { type: ['string', 'null'] },

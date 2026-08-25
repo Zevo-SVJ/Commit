@@ -31,6 +31,20 @@ export default function ErrorState({ error, onRetry, onLeave }: Props) {
               ? 'No model is connected to this deployment yet. Nothing you have entered has been lost.'
               : 'Your journey is still here. Nothing was lost.'}
           </p>
+
+          {/* Where it broke, in one line. Carries no key and no journey
+              content — only status codes and error classes — so it is safe to
+              leave on: these faults only ever appear in a real deployment,
+              which is exactly where they are hardest to diagnose blind. */}
+          {error.diagnostic && (
+            <details className="diag">
+              <summary className="diag__summary">Details</summary>
+              <p className="diag__body">
+                <code>{error.code}</code>
+                <span>{error.diagnostic}</span>
+              </p>
+            </details>
+          )}
         </motion.div>
       </div>
 

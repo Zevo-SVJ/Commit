@@ -7,10 +7,10 @@ import type {
   TurnEvent,
   TurnRequest,
   TurnResponse,
-} from '../shared/types.ts'
-import { turnInstruction } from './ai/prompt.ts'
-import { createOpenAIProvider, ProviderError, type Provider } from './ai/provider.ts'
-import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.ts'
+} from '../shared/types.js'
+import { turnInstruction } from './ai/prompt.js'
+import { createOpenAIProvider, ProviderError, type Provider } from './ai/provider.js'
+import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.js'
 
 /**
  * The host-agnostic core. Every adapter (Vercel, Node, the Vite dev server)
@@ -30,7 +30,9 @@ const MAX_EXCHANGES = 10
 
 export interface HandlerResult {
   status: number
-  body: TurnResponse | { error: { code: ApiErrorCode; message: string; retryable: boolean } }
+  body:
+    | TurnResponse
+    | { error: { code: ApiErrorCode; message: string; retryable: boolean; detail?: string } }
 }
 
 const fail = (
@@ -38,7 +40,12 @@ const fail = (
   code: ApiErrorCode,
   message: string,
   retryable: boolean,
-): HandlerResult => ({ status, body: { error: { code, message, retryable } } })
+  detail?: string,
+): HandlerResult => ({ status, body: { error: { code, message, retryable, detail } } })
+
+/** Error text stripped of anything that could carry a key. */
+const safeDetail = (text: string) =>
+  text.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***').slice(0, 220)
 
 const uid = (p: string) =>
   `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -250,7 +257,7 @@ export async function handleTurn(
         ? req.event.text
         : ''
   if (text.length > MAX_INPUT) {
-    return fail(400, 'bad_request', 'That is longer than LOCK can take in one go.', false)
+    return fail(400, 'bad_request', 'That is longer than Lock can take in one go.', false)
   }
   if (req.event.type === 'start' && text.trim().length === 0) {
     return fail(400, 'bad_request', 'Say what you are deciding first.', false)
@@ -272,23 +279,35 @@ export async function handleTurn(
   } catch (err) {
     if (err instanceof InvalidModelOutput) {
       console.error('[lock] invalid model output:', err.message)
-      return fail(502, 'invalid_response', 'That did not come back cleanly.', true)
+      return fail(
+        502, 'invalid_response', 'That did not come back cleanly.', true,
+        safeDetail(`model output rejected: ${err.message}`),
+      )
     }
     if (err instanceof ProviderError) {
       console.error('[lock] provider error:', err.message)
       switch (err.kind) {
         case 'unconfigured':
-          return fail(503, 'unconfigured', 'LOCK is not connected to a model yet.', false)
+          return fail(
+            503, 'unconfigured', 'Lock is not connected to a model yet.', false,
+            safeDetail(err.message),
+          )
         case 'rate_limited':
-          return fail(429, 'rate_limited', 'Too many requests. Give it a moment.', true)
+          return fail(
+            429, 'rate_limited', 'Too many requests. Give it a moment.', true,
+            safeDetail(err.message),
+          )
         case 'timeout':
-          return fail(504, 'timeout', 'That took too long.', true)
+          return fail(504, 'timeout', 'That took too long.', true, safeDetail(err.message))
         default:
-          return fail(502, 'upstream', 'Something went wrong.', true)
+          return fail(502, 'upstream', 'Something went wrong.', true, safeDetail(err.message))
       }
     }
     console.error('[lock] unexpected error:', err)
-    return fail(500, 'upstream', 'Something went wrong.', true)
+    return fail(
+      500, 'upstream', 'Something went wrong.', true,
+      safeDetail(err instanceof Error ? `${err.name}: ${err.message}` : String(err)),
+    )
   } finally {
     clearTimeout(timer)
   }

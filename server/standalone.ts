@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
-import { serveDecision } from './http.ts'
+import { serveDecision } from './http.js'
 
 /**
  * Self-hosted server: the built client plus the API, on one port.
@@ -49,7 +49,7 @@ createServer((req, res) => {
   })
   createReadStream(file).pipe(res)
 }).listen(PORT, () => {
-  console.log(`LOCK on http://localhost:${PORT}`)
+  console.log(`Lock on http://localhost:${PORT}`)
   if (!process.env.OPENAI_API_KEY) {
     console.warn('OPENAI_API_KEY is not set — the app will load but cannot reason.')
   }

@@ -8,7 +8,7 @@ interface Props {
 
 /**
  * A real wait, named plainly. It does not say "AI is thinking" — the user did
- * not come here to be told there is a model, and LOCK is supposed to be quiet
+ * not come here to be told there is a model, and Lock is supposed to be quiet
  * about itself.
  */
 export default function LoadingState({ label, reduced = false }: Props) {

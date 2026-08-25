@@ -4,7 +4,7 @@ import { LockRequestError, takeTurn, type LockError } from './api.ts'
 import { load, save } from './persistence.ts'
 
 /**
- * All of LOCK's state logic. Components below this render what it produces and
+ * All of Lock's state logic. Components below this render what it produces and
  * nothing more — no component talks to the network.
  */
 
@@ -112,10 +112,17 @@ export function useJourney() {
         }))
       } catch (err) {
         if (!alive.current || (err as Error)?.name === 'AbortError') return
-        const e =
+        const e: LockError =
           err instanceof LockRequestError
-            ? { code: err.code, message: err.message, retryable: err.retryable }
-            : { code: 'upstream' as const, message: 'Something went wrong.', retryable: true }
+            ? {
+                code: err.code,
+                message: err.message,
+                retryable: err.retryable,
+                // Without this the diagnostic is built and then thrown away,
+                // which is how every failure looked identical.
+                diagnostic: err.diagnostic,
+              }
+            : { code: 'upstream', message: 'Something went wrong.', retryable: true }
         // The journey is never destroyed by a failed turn.
         setState((s) => ({ ...s, phase: 'error', error: e, settling: false, turnPending: false }))
       }

@@ -38,7 +38,7 @@ export default function DecisionMoment({
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
         >
-          {/* No rule here: the accent rule belongs to LOCK's framing alone, so
+          {/* No rule here: the accent rule belongs to Lock's framing alone, so
               the two lines around the decision do not read as the same thing. */}
           <p className="t-quiet moment__rationale">{decision.rationale}</p>
         </motion.div>

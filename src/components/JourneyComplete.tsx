@@ -39,7 +39,7 @@ export default function JourneyComplete({
           {closing && <p className="t-quiet done__closing">{closing}</p>}
         </motion.div>
 
-        {/* A journey can close without a commitment — LOCK can conclude there
+        {/* A journey can close without a commitment — Lock can conclude there
             was nothing here to decide. That is a real outcome, not an empty
             list. */}
         {decisions.length === 0 ? (

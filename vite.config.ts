@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { lockApi } from './server/dev-plugin.ts'
+import { lockApi } from './server/dev-plugin'
 
 export default defineConfig({
   // The API lives at an absolute path, so the client is served from the root.

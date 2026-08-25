@@ -17,7 +17,7 @@ const screenMotion = {
   transition: { duration: 0.28, ease: [0.22, 1, 0.36, 1] as const },
 }
 
-/** What LOCK is doing, said plainly. Never "AI is thinking". */
+/** What Lock is doing, said plainly. Never "AI is thinking". */
 function loadingLabel(hasJourney: boolean, decided: number): string {
   if (!hasJourney) return 'Understanding'
   if (decided > 0) return 'Finding what’s left'

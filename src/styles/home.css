@@ -1,10 +1,10 @@
 .home__mark {
   flex: none;
   padding: calc(var(--safe-t) + 20px) var(--gutter) 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
+  /* Set as written: "Lock", not "Lock". */
+  letter-spacing: 0.02em;
   color: var(--ink-4);
 }
 
