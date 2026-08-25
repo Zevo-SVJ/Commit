@@ -9,7 +9,9 @@ entirely on local, deterministic mock logic: no API keys, no backend, no auth.
 
 ## Try it on a phone
 
-The prototype deploys to GitHub Pages on every push to this branch:
+Every push to this branch builds the site and publishes it to the `gh-pages`
+branch. To serve it, set **Settings -> Pages -> Source -> Deploy from a branch ->
+`gh-pages` / `(root)`** once. After that:
 
 **https://zevo-svj.github.io/Commit/**
 

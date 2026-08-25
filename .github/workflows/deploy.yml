@@ -1,6 +1,10 @@
-# Publishes the prototype to GitHub Pages so it can be opened on a real phone,
-# in a real browser, with real browser chrome — which is the only way the
-# viewport and gesture work in this prototype can actually be judged.
+# Publishes the prototype so it can be opened on a real phone, in a real
+# browser, with real browser chrome — the only way the viewport and gesture
+# work in this prototype can actually be judged.
+#
+# Builds on every push to this branch and force-pushes the result to the
+# `gh-pages` branch. Point Settings -> Pages at that branch once and the site
+# stays current on its own.
 name: Deploy prototype
 
 on:
@@ -9,45 +13,40 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 # Never let two deploys race; always finish the newest one.
 concurrency:
-  group: pages
+  group: gh-pages
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-
-      # enablement: true turns Pages on the first time this runs, so the
-      # repository needs no manual setup.
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - run: npm ci
       - run: npm run build
 
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish dist/ to gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Pages would otherwise run the output through Jekyll.
+          touch dist/.nojekyll
+          cd dist
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Build ${GITHUB_SHA}"
+          git push -f \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:gh-pages
