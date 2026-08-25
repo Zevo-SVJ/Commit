@@ -9,7 +9,8 @@ import type {
   TurnResponse,
 } from '../shared/types.js'
 import { turnInstruction } from './ai/prompt.js'
-import { createOpenAIProvider, ProviderError, type Provider } from './ai/provider.js'
+import { createProvider } from './ai/factory.js'
+import { ProviderError, type Provider } from './ai/provider.js'
 import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.js'
 
 /**
@@ -243,7 +244,7 @@ function validRequest(body: unknown): TurnRequest | null {
 
 export async function handleTurn(
   body: unknown,
-  provider: Provider = createOpenAIProvider(),
+  provider: Provider = createProvider(),
   now: number = Date.now(),
 ): Promise<HandlerResult> {
   const req = validRequest(body)

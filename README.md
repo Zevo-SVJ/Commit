@@ -45,11 +45,35 @@ do.
 - **Anything else** — `npm run build && npm start` serves the client and the
   API together on `PORT` (default 3000).
 
-| Variable | Required | Notes |
-| --- | --- | --- |
-| `OPENAI_API_KEY` | yes | Server-side only. CI fails the build if a key or its name reaches the client bundle. |
-| `LOCK_MODEL` | no | Defaults to `gpt-4.1`. |
-| `OPENAI_BASE_URL` | no | For a gateway or regional endpoint. |
+Lock talks to one provider, chosen by configuration. Set **either** key.
+
+| Variable | Notes |
+| --- | --- |
+| `GEMINI_API_KEY` | Google Gemini. Has a free tier. Server-side only. |
+| `GEMINI_MODEL` | Defaults to `gemini-2.5-flash`. `/probe` lists what your key can use. |
+| `OPENAI_API_KEY` | OpenAI. Server-side only. |
+| `LOCK_MODEL` | OpenAI model. Defaults to `gpt-4.1`. |
+| `LOCK_PROVIDER` | `openai` or `gemini`. Overrides the choice below. |
+| `OPENAI_BASE_URL` / `GEMINI_BASE_URL` | Gateway or regional endpoints. |
+
+Whichever key is present decides, Gemini first, so adding `GEMINI_API_KEY` is
+enough to switch. CI fails the build if any key or key name reaches the client
+bundle.
+
+### Adding a provider
+
+`server/ai/provider.ts` is the whole seam: a `Provider` returns the model's raw
+JSON object or throws a `ProviderError` whose `kind` names the situation
+(`quota`, `rate_limited`, `auth`, `model_unavailable`, …). Implementations live
+beside it — `openai.ts`, `gemini.ts` — and `factory.ts` picks one from the
+environment. Nothing above that line knows which provider answered: the handler,
+the turn validator, the `/api/decision` contract and the entire client are
+unchanged between them.
+
+Each provider translates the same turn schema into its own dialect. Gemini's
+`responseSchema` is an OpenAPI 3.0 subset — uppercase type names, `nullable`
+instead of `["string","null"]`, and no `additionalProperties` — so `gemini.ts`
+converts it rather than keeping a second copy of the shape.
 
 ## If a deployment is not working
 

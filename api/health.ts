@@ -9,8 +9,26 @@
  * classifications. It never reports the key.
  */
 
+/* Provider selection is duplicated here rather than imported: this file stays
+   dependency-free so that, if it answers and /api/decision does not, the fault
+   is the decision function's module graph and nothing else. */
+function providerName(): 'openai' | 'gemini' {
+  const explicit = (process.env.LOCK_PROVIDER ?? '').trim().toLowerCase()
+  if (explicit === 'openai' || explicit === 'gemini') return explicit
+  if (process.env.GEMINI_API_KEY) return 'gemini'
+  return 'openai'
+}
+
+const PROVIDER = providerName()
+const IS_GEMINI = PROVIDER === 'gemini'
+
+const KEY_VAR = IS_GEMINI ? 'GEMINI_API_KEY' : 'OPENAI_API_KEY'
 const OPENAI = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
-const MODEL = process.env.LOCK_MODEL || 'gpt-4.1'
+const GEMINI = (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')
+  .replace(/\/+$/, '')
+const MODEL = IS_GEMINI
+  ? process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+  : process.env.LOCK_MODEL || 'gpt-4.1'
 
 type Probe = {
   keyAccepted: boolean | null
@@ -23,6 +41,8 @@ type Probe = {
   advice: string | null
   /** Where to go and fix it, when there is such a place. */
   link: string | null
+  /** Models this key can actually use, when the provider will say. */
+  models?: string[]
 }
 
 /** Free: proves whether the key is accepted at all, and whether the model exists. */
@@ -52,6 +72,85 @@ async function checkKey(key: string): Promise<Partial<Probe>> {
     return { keyAccepted: true, modelAvailable: null, verdict: 'upstream', providerCode: code }
   } catch {
     return { verdict: 'unreachable', advice: 'Could not reach the provider from this function.' }
+  }
+}
+
+/**
+ * Gemini's free tier makes the model list worth reporting: model availability
+ * changes, so rather than trusting a hardcoded default this asks the key what
+ * it can actually use.
+ */
+async function checkGeminiKey(key: string): Promise<Partial<Probe>> {
+  try {
+    const res = await fetch(`${GEMINI}/models`, {
+      headers: { 'x-goog-api-key': key },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: { status?: string } }
+      const code = body.error?.status ?? null
+      if (res.status === 401 || res.status === 403) {
+        return {
+          keyAccepted: false, verdict: 'auth', providerCode: code,
+          advice: 'Google rejected the key. Check it was pasted whole, then redeploy.',
+          link: 'https://aistudio.google.com/apikey',
+        }
+      }
+      return { keyAccepted: true, verdict: 'upstream', providerCode: code }
+    }
+
+    const data = (await res.json()) as {
+      models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>
+    }
+    const usable = (data.models ?? [])
+      .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
+      .map((m) => (m.name ?? '').replace(/^models\//, ''))
+      .filter(Boolean)
+
+    if (usable.length && !usable.includes(MODEL)) {
+      return {
+        keyAccepted: true, modelAvailable: false, verdict: 'model_unavailable',
+        models: usable.slice(0, 40),
+        advice: `This key cannot use "${MODEL}". Set GEMINI_MODEL to one of the models listed below.`,
+      }
+    }
+    return { keyAccepted: true, modelAvailable: true, models: usable.slice(0, 40) }
+  } catch {
+    return { verdict: 'unreachable', advice: 'Could not reach Google from this function.' }
+  }
+}
+
+/** One tiny generation: the only way to tell a spent quota from a working key. */
+async function checkGeminiQuota(key: string): Promise<Partial<Probe>> {
+  try {
+    const res = await fetch(`${GEMINI}/models/${encodeURIComponent(MODEL)}:generateContent`, {
+      method: 'POST',
+      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+        generationConfig: { maxOutputTokens: 8 },
+      }),
+      signal: AbortSignal.timeout(15000),
+    })
+    if (res.ok) return { canGenerate: true, verdict: 'ok', advice: null }
+
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: { status?: string; message?: string }
+    }
+    const code = body.error?.status ?? null
+    const message = body.error?.message ?? ''
+    if (res.status === 429) {
+      const daily = /per day|daily|quota metric/i.test(message)
+      return {
+        canGenerate: false, verdict: daily ? 'quota' : 'rate_limited', providerCode: code,
+        advice: daily
+          ? 'The free tier\u2019s daily request allowance is spent. It resets on Google\u2019s schedule; no payment is required.'
+          : 'A per-minute limit. This one clears on its own within a minute.',
+      }
+    }
+    return { canGenerate: false, verdict: 'upstream', providerCode: code }
+  } catch {
+    return { canGenerate: false, verdict: 'unreachable' }
   }
 }
 
@@ -148,6 +247,11 @@ a{color:#9ea2a8}
 ${body.probe?.advice ? `<p class="advice">${body.probe.advice}</p>` : ''}
 ${body.probe?.link ? `<p class="fix"><a href="${body.probe.link}" target="_blank" rel="noreferrer">Open the page that fixes this</a></p>` : ''}
 <h2>Provider</h2>${probeRows}
+${
+  body.probe?.models?.length
+    ? `<h2>Models this key can use</h2><p class="hint">${body.probe.models.join(', ')}</p>`
+    : ''
+}
 <h2>Key</h2>
 ${row('Present', body.key.present)}
 ${row('Length', body.key.length)}
@@ -155,6 +259,7 @@ ${row('Prefix', body.key.prefix)}
 ${row('Well formed', body.key.looksWellFormed)}
 ${row('Stray whitespace', body.key.hasWhitespace)}
 <h2>Deployment</h2>
+${row('Provider', body.provider)}
 ${row('Model', body.model)}
 ${row('Environment', body.env)}
 ${row('Commit', body.commit)}
@@ -167,19 +272,19 @@ ${row('Node', body.node)}
 }
 
 export default async function handler(req: any, b?: any) {
-  const key = (process.env.OPENAI_API_KEY ?? '').trim()
-  const rawKey = process.env.OPENAI_API_KEY ?? ''
+  const rawKey = process.env[KEY_VAR] ?? ''
+  const key = rawKey.trim()
 
   const url = new URL(req?.url ?? '/', 'http://localhost')
   const wantsProbe = url.searchParams.get('probe') === '1'
 
   let probe: Probe | null = null
   if (wantsProbe && key) {
-    const first = await checkKey(key)
+    const first = IS_GEMINI ? await checkGeminiKey(key) : await checkKey(key)
     // Only ask about credit once the key and the model have both checked out.
     // Otherwise a passing credit check would overwrite the real verdict.
     const settled = first.keyAccepted === false || first.modelAvailable === false
-    const second = settled ? {} : await checkQuota(key)
+    const second = settled ? {} : IS_GEMINI ? await checkGeminiQuota(key) : await checkQuota(key)
     probe = {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
       verdict: 'unknown', providerCode: null, advice: null, link: null,
@@ -196,11 +301,17 @@ export default async function handler(req: any, b?: any) {
       present: rawKey.length > 0,
       length: rawKey.length,
       prefix: rawKey ? rawKey.slice(0, 3) : null,
-      looksWellFormed: /^sk-[A-Za-z0-9_\-]{20,}$/.test(key),
+      looksWellFormed: IS_GEMINI
+        ? /^AIza[A-Za-z0-9_\-]{20,}$/.test(key)
+        : /^sk-[A-Za-z0-9_\-]{20,}$/.test(key),
       hasWhitespace: rawKey !== rawKey.trim(),
     },
+    provider: PROVIDER,
+    providerKeyVariable: KEY_VAR,
     model: MODEL,
-    baseUrlOverridden: Boolean(process.env.OPENAI_BASE_URL),
+    baseUrlOverridden: Boolean(
+      IS_GEMINI ? process.env.GEMINI_BASE_URL : process.env.OPENAI_BASE_URL,
+    ),
     probe,
     probeHint: wantsProbe ? null : 'add ?probe=1 to test the key against the provider',
     node: process.version,

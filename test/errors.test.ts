@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, type Server } from 'node:http'
-import { classifyProviderError, createOpenAIProvider, ProviderError } from '../server/ai/provider.js'
+import { classifyProviderError, createOpenAIProvider } from '../server/ai/openai.js'
+import { ProviderError } from '../server/ai/provider.js'
 import { handleTurn } from '../server/handler.js'
 
 /**

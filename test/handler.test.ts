@@ -2,7 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { handleTurn, buildBrief } from '../server/handler.js'
 import { parseTurn, InvalidModelOutput } from '../server/ai/schema.js'
-import { extractJson, ProviderError, type Provider } from '../server/ai/provider.js'
+import { extractJson } from '../server/ai/openai.js'
+import { ProviderError, type Provider } from '../server/ai/provider.js'
 import type { DecisionJourney, TurnResponse } from '../shared/types.js'
 
 /** A provider that returns whatever the test hands it. No model involved. */
