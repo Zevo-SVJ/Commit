@@ -7,7 +7,16 @@ A high-fidelity interactive prototype of a decision interface.
 This is a product prototype and interaction lab, not the production SaaS. It runs
 entirely on local, deterministic mock logic: no API keys, no backend, no auth.
 
-## Run it
+## Try it on a phone
+
+The prototype deploys to GitHub Pages on every push to this branch:
+
+**https://zevo-svj.github.io/Commit/**
+
+Open that in Safari or Chrome on a phone. It is a normal website, so the
+browser's own toolbars behave normally — which is the point.
+
+## Run it locally
 
 ```bash
 npm install
