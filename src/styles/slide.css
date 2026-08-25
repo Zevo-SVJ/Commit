@@ -1,0 +1,293 @@
+/* ==================================================================
+   Slide to Confirm
+   A physical control. Everything here serves the sense that the thumb
+   is an object the finger is holding.
+   ================================================================== */
+
+.slide {
+  --track-h: 64px;
+  --thumb: 56px;
+  --pad: 4px;
+  width: 100%;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.slide__track {
+  position: relative;
+  height: var(--track-h);
+  border-radius: calc(var(--track-h) / 2);
+  background: rgba(255, 255, 255, 0.042);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.075),
+    inset 0 1px 1px rgba(255, 255, 255, 0.05),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.5),
+    0 12px 34px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  isolation: isolate;
+  transition: box-shadow 320ms var(--ease-out);
+}
+
+.slide.is-dragging .slide__track {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.11),
+    inset 0 1px 1px rgba(255, 255, 255, 0.06),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.5),
+    0 14px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Light travelling behind the thumb. Width is driven by the motion value. */
+.slide__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.08) 55%,
+    rgba(255, 255, 255, 0.16) 100%
+  );
+  pointer-events: none;
+  /* Feathered leading edge, so the fill dissolves under the thumb instead of
+     ending in a hard rectangle at its corners. */
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 52px), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 52px), transparent 100%);
+}
+
+.slide.is-final .slide__fill {
+  background: linear-gradient(
+    90deg,
+    rgba(224, 192, 138, 0.05) 0%,
+    rgba(224, 192, 138, 0.11) 55%,
+    rgba(224, 192, 138, 0.2) 100%
+  );
+}
+
+/* Warmth that only appears near the end of the track. */
+.slide__glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 180% at 100% 50%,
+    rgba(255, 255, 255, 0.14),
+    transparent 62%
+  );
+}
+
+.slide.is-final .slide__glow {
+  background: radial-gradient(
+    120% 180% at 100% 50%,
+    rgba(224, 192, 138, 0.22),
+    transparent 62%
+  );
+}
+
+/* ---- label ------------------------------------------------------ */
+
+.slide__label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: calc(var(--thumb) * 0.5);
+  pointer-events: none;
+  font-size: 15.5px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+}
+
+/* A slow sweep of light across the words: the only idle animation here,
+   and the affordance that says this control is meant to be moved. */
+.slide__label-text {
+  background: linear-gradient(
+      100deg,
+      rgba(241, 242, 244, 0.46) 0%,
+      rgba(241, 242, 244, 0.46) 34%,
+      rgba(255, 255, 255, 0.95) 50%,
+      rgba(241, 242, 244, 0.46) 66%,
+      rgba(241, 242, 244, 0.46) 100%
+    )
+    0 0 / 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: slide-sweep 4.2s var(--ease-in-out) infinite;
+}
+
+@keyframes slide-sweep {
+  0%,
+  12% {
+    background-position: 150% 0;
+  }
+  62%,
+  100% {
+    background-position: -60% 0;
+  }
+}
+
+.slide.is-dragging .slide__label-text,
+.slide.is-resolved .slide__label-text {
+  animation: none;
+  color: rgba(241, 242, 244, 0.6);
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+}
+
+.slide.is-resolved .slide__label-text {
+  color: rgba(241, 242, 244, 0.78);
+}
+
+/* ---- direction hint --------------------------------------------- */
+
+.slide__hint {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.slide__hint i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  animation: hint-pulse 2.6s var(--ease-in-out) infinite;
+}
+
+.slide__hint i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.slide__hint i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes hint-pulse {
+  0%,
+  62%,
+  100% {
+    opacity: 0.28;
+  }
+  22% {
+    opacity: 0.85;
+  }
+}
+
+/* ---- thumb ------------------------------------------------------- */
+
+.slide__thumb {
+  position: absolute;
+  left: var(--pad);
+  top: var(--pad);
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+
+  background:
+    radial-gradient(70% 70% at 50% 22%, #ffffff 0%, #f3f4f6 46%, #dcdee2 100%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 -2px 4px rgba(0, 0, 0, 0.14) inset,
+    0 8px 20px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+
+  /* The gesture owns this element completely — no scrolling, no selection,
+     no long-press menu competing with the drag. */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
+  will-change: transform;
+  transition: box-shadow 220ms var(--ease-out);
+}
+
+.slide.is-dragging .slide__thumb {
+  cursor: grabbing;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9) inset,
+    0 -2px 4px rgba(0, 0, 0, 0.16) inset,
+    0 10px 26px rgba(0, 0, 0, 0.6),
+    0 0 0 4px rgba(255, 255, 255, 0.03);
+}
+
+.slide.is-resolved .slide__thumb {
+  cursor: default;
+}
+
+.slide.is-final.is-resolved .slide__thumb {
+  background: radial-gradient(70% 70% at 50% 22%, #fffaf1 0%, #f6ead4 52%, #e6d2ad 100%);
+}
+
+.slide.is-disabled .slide__thumb {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- glyph ------------------------------------------------------- */
+
+.slide__glyph {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  color: #101215;
+}
+
+.slide__glyph svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 320ms var(--ease-out);
+}
+
+.slide__glyph-arrow {
+  opacity: 1;
+  transform: translateX(0.5px);
+}
+
+.slide__glyph-check {
+  opacity: 0;
+  transform: scale(0.6);
+}
+
+.slide.is-resolved .slide__glyph-arrow {
+  opacity: 0;
+  transform: scale(0.6);
+}
+
+.slide.is-resolved .slide__glyph-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Larger phones get a slightly bigger control; small ones stay reachable. */
+@media (max-width: 359px) {
+  .slide {
+    --track-h: 60px;
+    --thumb: 52px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide__label-text {
+    animation: none;
+    color: rgba(241, 242, 244, 0.55);
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+  }
+  .slide__hint i {
+    animation: none;
+  }
+}

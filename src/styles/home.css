@@ -1,0 +1,174 @@
+.home__mark {
+  flex: none;
+  padding: calc(var(--safe-t) + 20px) var(--gutter) 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.home__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: 32px;
+  /* Optical centring: the block reads better slightly above true centre. */
+  padding-bottom: 13vh;
+}
+
+/* With the keyboard up — or in any short viewport — stop centring and pin the
+   field near the top so it and the action both stay visible.
+   Two triggers because the two mobile browsers behave differently: iOS Safari
+   leaves the layout viewport alone and only shrinks the visual one (detected in
+   JS as .kb-open), while Chrome with interactive-widget=resizes-content shrinks
+   the layout viewport itself (caught by the height query). */
+.kb-open .home__body {
+  justify-content: flex-start;
+  padding-top: 12px;
+  padding-bottom: 16px;
+}
+
+@media (max-height: 620px) {
+  .home__body {
+    justify-content: flex-start;
+    padding-top: 12px;
+    padding-bottom: 16px;
+  }
+
+  .demos {
+    display: none;
+  }
+}
+
+.home__center {
+  width: 100%;
+}
+
+.home__heading {
+  margin-bottom: 26px;
+}
+
+.home__field {
+  position: relative;
+  padding-bottom: 14px;
+}
+
+.home__input {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0;
+  resize: none;
+  overflow-y: auto;
+  font-size: 20px;
+  line-height: 1.42;
+  letter-spacing: -0.018em;
+  color: var(--ink);
+  caret-color: var(--seal);
+}
+
+.home__input::placeholder {
+  color: var(--ink-4);
+}
+
+.home__input:focus {
+  outline: none;
+}
+
+/* A single hairline that lights up on focus — the whole chrome of the field. */
+.home__rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--hair);
+  overflow: hidden;
+}
+
+.home__rule::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(224, 192, 138, 0.85), rgba(224, 192, 138, 0.12));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 520ms var(--ease-out);
+}
+
+.home__field:focus-within .home__rule::after,
+.home__field.is-filled .home__rule::after {
+  transform: scaleX(1);
+}
+
+.home__swap {
+  margin-top: 18px;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink-3);
+  padding: 10px 0;
+  min-height: 44px;
+  text-align: left;
+  transition: color 200ms var(--ease-out);
+}
+
+.home__swap:hover,
+.home__swap:focus-visible {
+  color: var(--ink-2);
+}
+
+.home__dock {
+  padding-top: 10px;
+}
+
+/* ---- demos ------------------------------------------------------- */
+
+.demos {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 18px;
+  min-height: 30px;
+}
+
+.kb-open .demos {
+  display: none;
+}
+
+.demos__label {
+  font-size: 12.5px;
+  color: var(--ink-4);
+  letter-spacing: 0.01em;
+}
+
+.demos__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.demos__chip {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  padding: 7px 11px;
+  border-radius: 9px;
+  transition:
+    background-color 200ms var(--ease-out),
+    color 200ms var(--ease-out);
+}
+
+.demos__chip:hover,
+.demos__chip:focus-visible {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.demos__sep {
+  width: 1px;
+  height: 11px;
+  background: var(--hair-strong);
+}

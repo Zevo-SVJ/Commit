@@ -1,0 +1,71 @@
+.done__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: calc(var(--safe-t) + 48px);
+  padding-bottom: 28px;
+}
+
+.done__eyebrow {
+  color: var(--seal-dim);
+  margin-bottom: 14px;
+}
+
+.done__title {
+  margin-bottom: 34px;
+}
+
+.done__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.done__item {
+  position: relative;
+  display: flex;
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.done__item + .done__item {
+  border-top: 1px solid var(--hair);
+}
+
+/* The seal: the one place the accent is fully saturated. */
+.done__seal {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--seal);
+  box-shadow: 0 0 0 4px var(--seal-wash);
+}
+
+.done__answer {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  color: var(--ink);
+}
+
+.done__meta {
+  margin: 5px 0 0;
+  font-size: 13px;
+  color: var(--ink-4);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.done__own {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--seal-dim);
+}

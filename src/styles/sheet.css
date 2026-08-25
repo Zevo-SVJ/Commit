@@ -1,0 +1,224 @@
+.sheet-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+}
+
+.sheet__scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  background: rgba(4, 5, 6, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  cursor: default;
+}
+
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 82%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 26px 26px 0 0;
+  background: #131518;
+  box-shadow:
+    0 -1px 0 rgba(255, 255, 255, 0.09) inset,
+    0 -24px 60px rgba(0, 0, 0, 0.6);
+  padding-bottom: calc(var(--safe-b) + 22px);
+}
+
+/* Keyboard open: the sheet sits on the keyboard, not behind it. */
+.kb-open .sheet {
+  padding-bottom: 16px;
+  max-height: 92%;
+}
+
+.sheet__grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+  margin: 10px auto 0;
+}
+
+.sheet__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px var(--gutter) 6px;
+}
+
+.sheet__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.sheet__close {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--ink-3);
+  background: var(--panel);
+}
+
+.sheet__close:hover,
+.sheet__close:focus-visible {
+  color: var(--ink);
+}
+
+.sheet__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px var(--gutter) 4px;
+}
+
+.sheet__lead {
+  margin: 0 0 18px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+/* ---- journey list ------------------------------------------------ */
+
+.journey__problem {
+  margin: 0 0 22px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  padding-left: 14px;
+  border-left: 2px solid var(--hair-strong);
+}
+
+.journey__list {
+  list-style: none;
+  margin: 0 0 22px;
+  padding: 0;
+}
+
+.journey__item {
+  position: relative;
+  display: flex;
+  gap: 16px;
+  padding: 12px 0 14px;
+}
+
+/* The spine connecting the decisions of one journey. */
+.journey__item:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 24px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--hair);
+}
+
+.journey__node {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--ink-4);
+}
+
+.journey__item.is-confirmed .journey__node {
+  background: var(--seal);
+  box-shadow: 0 0 0 3px var(--seal-wash);
+}
+
+.journey__item.is-active .journey__node {
+  background: var(--ink);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.09);
+}
+
+.journey__content {
+  min-width: 0;
+}
+
+.journey__answer {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.016em;
+  color: var(--ink);
+}
+
+.journey__item.is-queued .journey__answer {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+.journey__meta {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-4);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.journey__own {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--seal-dim);
+}
+
+.journey__add {
+  margin-bottom: 4px;
+}
+
+/* ---- add decision ------------------------------------------------ */
+
+.add__field {
+  position: relative;
+  padding-bottom: 12px;
+  margin-bottom: 22px;
+}
+
+.add__input {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0;
+  resize: none;
+  overflow-y: auto;
+  font-size: 19px;
+  line-height: 1.42;
+  letter-spacing: -0.018em;
+  color: var(--ink);
+  caret-color: var(--seal);
+}
+
+.add__input::placeholder {
+  color: var(--ink-4);
+}
+
+.add__input:focus {
+  outline: none;
+}
+
+.add__rule {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--hair);
+}

@@ -1,0 +1,353 @@
+/* ==================================================================
+   Commit — visual system
+   Monochrome graphite + a single warm accent reserved for commitment.
+   ================================================================== */
+
+:root {
+  /* Surface */
+  --bg: #08090b;
+  --bg-lift: #0d0f11;
+  --panel: rgba(255, 255, 255, 0.032);
+  --panel-strong: rgba(255, 255, 255, 0.055);
+  --hair: rgba(255, 255, 255, 0.075);
+  --hair-strong: rgba(255, 255, 255, 0.13);
+
+  /* Type */
+  --ink: #f1f2f4;
+  --ink-2: #9ea2a8;
+  --ink-3: #676b71;
+  --ink-4: #494d53;
+
+  /* The one accent. Used only where a commitment is made or recorded. */
+  --seal: #e0c08a;
+  --seal-dim: rgba(224, 192, 138, 0.42);
+  --seal-wash: rgba(224, 192, 138, 0.08);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Layout */
+  --gutter: 22px;
+  --measure: 480px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+
+  /* Refined at runtime by useAppViewport(); dvh is the pre-JS baseline. */
+  --app-h: 100dvh;
+  --app-top: 0px;
+  --kb-h: 0px;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 17px;
+  line-height: 1.5;
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* The document itself never scrolls: screens scroll internally. This is what
+     keeps bottom-anchored UI clear of the browser toolbar in every state. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+
+button {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: rgba(224, 192, 138, 0.24);
+}
+
+/* ------------------------------------------------------------------
+   App shell
+   ------------------------------------------------------------------ */
+
+.app {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top);
+  height: var(--app-h);
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  isolation: isolate;
+}
+
+/* Desktop keeps the mobile experience, centred — not a dashboard. */
+.app__frame {
+  position: relative;
+  width: 100%;
+  max-width: var(--measure);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (min-width: 620px) {
+  .app::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.035), transparent 60%),
+      var(--bg);
+    z-index: -2;
+  }
+  .app__frame {
+    border-left: 1px solid rgba(255, 255, 255, 0.05);
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+  }
+}
+
+/* Ambient depth. Sits behind everything, shifts with the stage. */
+.aura {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(90% 55% at 50% 0%, rgba(255, 255, 255, 0.055), transparent 62%),
+    radial-gradient(75% 45% at 50% 108%, rgba(255, 255, 255, 0.035), transparent 66%);
+  transition: opacity 900ms var(--ease-out);
+}
+
+.aura--commit {
+  background:
+    radial-gradient(90% 55% at 50% 0%, rgba(255, 255, 255, 0.05), transparent 62%),
+    radial-gradient(85% 55% at 50% 110%, rgba(224, 192, 138, 0.1), transparent 68%);
+}
+
+/* Fine grain — stops large dark fields from banding. */
+.grain {
+  position: absolute;
+  inset: -50%;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ------------------------------------------------------------------
+   Type scale
+   ------------------------------------------------------------------ */
+
+.t-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+  margin: 0;
+}
+
+.t-display {
+  font-size: clamp(28px, 8.4vw, 34px);
+  line-height: 1.14;
+  font-weight: 600;
+  letter-spacing: -0.032em;
+  margin: 0;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+.t-title {
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.024em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.t-body {
+  font-size: 17px;
+  line-height: 1.52;
+  color: var(--ink-2);
+  margin: 0;
+}
+
+.t-quiet {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------
+   Screen scaffolding
+   ------------------------------------------------------------------ */
+
+.screen {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The scrolling middle. Only this scrolls — never the document. */
+.screen__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 0 var(--gutter);
+}
+
+/* Bottom dock. Always clear of browser chrome and the home indicator. */
+.screen__dock {
+  flex: none;
+  padding: 22px var(--gutter) calc(var(--safe-b) + 26px);
+  background: linear-gradient(to top, var(--bg) 46%, rgba(8, 9, 11, 0));
+}
+
+/* When the keyboard is up the dock tightens rather than being pushed away. */
+.kb-open .screen__dock {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.stack > * + * {
+  margin-top: var(--stack-gap, 16px);
+}
+
+/* ------------------------------------------------------------------
+   Buttons
+   ------------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 54px;
+  padding: 0 22px;
+  border-radius: 16px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  transition:
+    transform 180ms var(--ease-out),
+    background-color 220ms var(--ease-out),
+    opacity 220ms var(--ease-out);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.btn:disabled {
+  opacity: 0.34;
+  cursor: default;
+}
+
+.btn--primary {
+  background: var(--ink);
+  color: #0a0b0d;
+}
+
+/* A disabled primary should recede, not sit there as a grey slab. */
+.btn--primary:disabled {
+  opacity: 1;
+  background: var(--panel);
+  color: var(--ink-4);
+  box-shadow: inset 0 0 0 1px var(--hair);
+}
+
+.btn--ghost {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--hair);
+}
+
+.btn--bare {
+  width: auto;
+  min-height: 44px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-3);
+  padding: 0 4px;
+}
+
+.btn--bare:active {
+  color: var(--ink-2);
+}
+
+/* Fine print row used for secondary/accessible paths. */
+.subtle-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  min-height: 20px;
+}
+
+.subtle-action {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink-4);
+  padding: 8px 12px;
+  border-radius: 10px;
+  transition: color 200ms var(--ease-out);
+}
+
+.subtle-action:hover,
+.subtle-action:focus-visible {
+  color: var(--ink-2);
+}
+
+.no-motion * {
+  animation-duration: 0.001ms !important;
+  transition-duration: 0.001ms !important;
+}

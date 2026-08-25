@@ -1,0 +1,377 @@
+/* ---- top bar ----------------------------------------------------- */
+
+.ws__bar {
+  flex: none;
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  padding: calc(var(--safe-t) + 8px) 10px 8px;
+}
+
+.ws__icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--ink-3);
+  transition:
+    color 200ms var(--ease-out),
+    background-color 200ms var(--ease-out);
+}
+
+.ws__icon:hover,
+.ws__icon:focus-visible {
+  color: var(--ink);
+  background: var(--panel);
+}
+
+.ws__title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 6px;
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.008em;
+}
+
+.ws__title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws__title svg {
+  flex: none;
+  opacity: 0.6;
+}
+
+/* ---- progress hairline ------------------------------------------- */
+
+.ws__progress {
+  flex: none;
+  height: 1.5px;
+  margin: 0 var(--gutter);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.ws__progress-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.3));
+}
+
+/* Losing ground is visible: the bar cools to the accent as it retreats. */
+.ws__progress-fill.is-down {
+  background: linear-gradient(90deg, rgba(224, 192, 138, 0.2), rgba(224, 192, 138, 0.48));
+}
+
+/* ---- body -------------------------------------------------------- */
+
+.ws__body {
+  display: flex;
+  flex-direction: column;
+  padding-top: 26px;
+  padding-bottom: 14px;
+}
+
+/* Content sits low, near the thumb and just above whatever acts on it.
+   margin-top:auto rather than justify-content:flex-end, so a card taller than
+   the viewport still scrolls from its top instead of clipping it. */
+.ws__card {
+  width: 100%;
+  margin-top: auto;
+}
+
+.ws__dock-spacer {
+  height: 54px;
+}
+
+/* ---- cards ------------------------------------------------------- */
+
+.card__lead {
+  margin-top: 14px;
+}
+
+.card__prompt {
+  margin-top: 14px;
+}
+
+.card__sub {
+  margin-top: 14px;
+}
+
+.card__aside {
+  display: block;
+  margin: 18px auto 0;
+}
+
+/* facts */
+
+.facts {
+  list-style: none;
+  margin: 28px 0 0;
+  padding: 0;
+}
+
+.facts__item {
+  display: flex;
+  gap: 14px;
+  padding: 14px 0;
+  align-items: baseline;
+}
+
+.facts__item + .facts__item {
+  border-top: 1px solid var(--hair);
+}
+
+.facts__dot {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  transform: translateY(-3px);
+}
+
+.facts__text {
+  font-size: 16px;
+  line-height: 1.48;
+  color: var(--ink-2);
+}
+
+/* insight */
+
+.insight {
+  position: relative;
+  margin: 24px 0 0;
+  padding-left: 20px;
+}
+
+.insight__rule {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--hair-strong);
+}
+
+.card--insight.is-shift .insight__rule {
+  background: var(--seal-dim);
+}
+
+.card--insight.is-shift .t-eyebrow {
+  color: var(--seal-dim);
+}
+
+.insight__body {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.46;
+  letter-spacing: -0.019em;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
+/* options */
+
+.options {
+  list-style: none;
+  margin: 30px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  min-height: 58px;
+  padding: 15px 18px;
+  border-radius: 15px;
+  text-align: left;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--hair);
+  transition:
+    background-color 240ms var(--ease-out),
+    box-shadow 240ms var(--ease-out),
+    opacity 320ms var(--ease-out),
+    transform 200ms var(--ease-out);
+}
+
+.option:hover:not(:disabled),
+.option:focus-visible {
+  background: var(--panel-strong);
+  box-shadow: inset 0 0 0 1px var(--hair-strong);
+}
+
+.option:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.option__label {
+  font-size: 16.5px;
+  font-weight: 500;
+  letter-spacing: -0.016em;
+  color: var(--ink);
+}
+
+.option__mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--hair-strong);
+  transition:
+    background-color 240ms var(--ease-out),
+    box-shadow 240ms var(--ease-out);
+}
+
+.option.is-chosen {
+  background: var(--seal-wash);
+  box-shadow: inset 0 0 0 1px var(--seal-dim);
+}
+
+.option.is-chosen .option__mark {
+  background: var(--seal);
+  box-shadow: inset 0 0 0 1.5px var(--seal);
+}
+
+.option.is-dimmed {
+  opacity: 0.28;
+}
+
+.option:disabled {
+  cursor: default;
+}
+
+/* free-text answer */
+
+.write {
+  margin-top: 28px;
+}
+
+.write__input {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--hair);
+  border-radius: 15px;
+  padding: 15px 16px;
+  resize: none;
+  overflow-y: auto;
+  font-size: 17px;
+  line-height: 1.45;
+  letter-spacing: -0.016em;
+  color: var(--ink);
+  caret-color: var(--seal);
+}
+
+.write__input::placeholder {
+  color: var(--ink-4);
+}
+
+.write__input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--hair-strong);
+}
+
+.write__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.write__send {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #0a0b0d;
+  transition:
+    opacity 200ms var(--ease-out),
+    transform 200ms var(--ease-out);
+}
+
+.write__send:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.write__send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+/* decision moment */
+
+.card--moment {
+  padding: 8px 0;
+}
+
+.moment__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.moment__tag {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--seal-dim);
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--seal-wash);
+}
+
+.moment__answer {
+  margin-top: 18px;
+  font-size: clamp(30px, 9.2vw, 38px);
+  letter-spacing: -0.036em;
+  line-height: 1.1;
+}
+
+.moment__foot {
+  margin-top: 26px;
+  display: flex;
+  gap: 16px;
+}
+
+.moment__rule {
+  flex: none;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--hair-strong);
+}
+
+.moment__rationale {
+  flex: 1;
+}
+
+.subtle-action.is-fallback {
+  color: var(--ink-2);
+  background: var(--panel);
+  box-shadow: inset 0 0 0 1px var(--hair);
+}
