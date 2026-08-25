@@ -7,10 +7,11 @@ import {
   useState,
 } from 'react'
 import { haptic } from '../lib/haptics'
+import { CONFIRM, CONFIRM_REDUCED } from '../lib/timing'
 import '../styles/slide.css'
 
 const TRACK_PAD = 4
-const THUMB = 56
+const THUMB = 52
 
 interface Grab {
   pointerId: number
@@ -30,6 +31,7 @@ export interface SlideToConfirmProps {
   tone?: 'default' | 'final'
   /** Remounts the control between decisions. */
   resetKey?: string | number
+  reduced?: boolean
 }
 
 export default function SlideToConfirm({
@@ -38,6 +40,7 @@ export default function SlideToConfirm({
   disabled = false,
   tone = 'default',
   resetKey,
+  reduced = false,
 }: SlideToConfirmProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const thumbRef = useRef<HTMLDivElement>(null)
@@ -96,9 +99,11 @@ export default function SlideToConfirm({
     setResolved(true)
     haptic('commit')
     animate(x, maxX, { type: 'spring', stiffness: 900, damping: 62 })
-    // Let the capsule resolve before the journey moves on.
-    window.setTimeout(onConfirm, 460)
-  }, [maxX, onConfirm, resolved, x])
+    // Phase 1: the completed capsule is held, so the gesture is seen to have
+    // landed before anything else moves.
+    const t = reduced ? CONFIRM_REDUCED : CONFIRM
+    window.setTimeout(onConfirm, t.hold)
+  }, [maxX, onConfirm, resolved, x, reduced])
 
   /** The end of the track means the end of the track — not "far enough". */
   const isAtEnd = useCallback(

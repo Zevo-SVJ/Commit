@@ -1,0 +1,41 @@
+# V1 needs a server (the model call must stay server-side), so this no longer
+# publishes to GitHub Pages — static hosting cannot run /api/decision.
+# It checks the things that would otherwise break silently.
+name: CI
+
+on:
+  push:
+    branches: [claude/commit-decision-prototype-cqx9rf]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Server and provider tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: No secret may reach the browser bundle
+        run: |
+          set -euo pipefail
+          if grep -rqE 'sk-[A-Za-z0-9_-]{16,}|OPENAI_API_KEY' dist/; then
+            echo "::error::a key or key name is present in the client bundle"
+            exit 1
+          fi
+          echo "client bundle is clean"

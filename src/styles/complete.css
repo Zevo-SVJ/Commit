@@ -12,7 +12,12 @@
 }
 
 .done__title {
+  margin-bottom: 16px;
+}
+
+.done__closing {
   margin-bottom: 34px;
+  max-width: 30ch;
 }
 
 .done__list {

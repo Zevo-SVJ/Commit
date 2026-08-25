@@ -185,13 +185,13 @@
 
 /* ---- add decision ------------------------------------------------ */
 
-.add__field {
+.sheet .field {
   position: relative;
   padding-bottom: 12px;
   margin-bottom: 22px;
 }
 
-.add__input {
+.sheet .field__input {
   display: block;
   width: 100%;
   border: 0;
@@ -206,19 +206,24 @@
   caret-color: var(--seal);
 }
 
-.add__input::placeholder {
+.sheet .field__input::placeholder {
   color: var(--ink-4);
 }
 
-.add__input:focus {
+.sheet .field__input:focus {
   outline: none;
 }
 
-.add__rule {
+.sheet .field__rule {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   height: 1px;
   background: var(--hair);
+}
+
+.add__submit {
+  margin-top: 22px;
+  margin-bottom: 4px;
 }

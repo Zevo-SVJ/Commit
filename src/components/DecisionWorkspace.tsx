@@ -1,139 +1,126 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useRef, useState } from 'react'
-import type { Beat, Decision, DecisionJourney as Journey } from '../lib/types'
-import ConfirmationTransition from './ConfirmationTransition'
-import DecisionContext from './DecisionContext'
-import DecisionInsight from './DecisionInsight'
+import type { Decision, DecisionJourney, Step } from '../../shared/types.ts'
+import type { Phase } from '../lib/useJourney.ts'
+import ConfirmationAnimation from './ConfirmationAnimation'
 import DecisionMoment from './DecisionMoment'
 import DecisionQuestion from './DecisionQuestion'
+import JourneyTransition from './JourneyTransition'
+import LoadingState from './LoadingState'
 import SlideToConfirm from './SlideToConfirm'
 import '../styles/workspace.css'
 
 interface Props {
-  journey: Journey
-  beat: Beat | null
-  activeDecision: Decision | null
-  transitionFinal: boolean | null
-  progressDirection: 'up' | 'down'
+  journey: DecisionJourney
+  step: Step | null
+  phase: Phase
+  settling: boolean
+  pendingDecision: Decision | null
   reduced: boolean
-  onAnswer: (payload: { optionId?: string; free?: string }) => void
-  onAdvance: () => void
+  loadingLabel: string
+  onAnswer: (text: string) => void
   onConfirm: (decisionId: string) => void
-  onTransitionDone: () => void
+  onConfirmationDone: () => void
   onOpenJourney: () => void
   onAddDecision: () => void
   onLeave: () => void
 }
 
-const cardMotion = {
-  initial: { opacity: 0, y: 16, filter: 'blur(8px)' },
-  animate: { opacity: 1, y: 0, filter: 'blur(0px)' },
-  exit: { opacity: 0, y: -14, filter: 'blur(8px)' },
-  transition: { duration: 0.46, ease: [0.22, 1, 0.36, 1] as const },
-}
-
 export default function DecisionWorkspace({
   journey,
-  beat,
-  activeDecision,
-  transitionFinal,
-  progressDirection,
+  step,
+  phase,
+  settling,
+  pendingDecision,
   reduced,
+  loadingLabel,
   onAnswer,
-  onAdvance,
   onConfirm,
-  onTransitionDone,
+  onConfirmationDone,
   onOpenJourney,
   onAddDecision,
   onLeave,
 }: Props) {
-  const isDecision = beat?.kind === 'decision' && !!activeDecision
-  const inTransition = transitionFinal !== null
+  const thinking = phase === 'thinking'
+  const confirming = phase === 'confirming'
+  const showSlide = !!pendingDecision && !thinking
 
-  /* Accessible fallback for the slide — revealed, not advertised. */
+  /* The accessible path, revealed rather than advertised. */
   const [showFallback, setShowFallback] = useState(false)
-  useEffect(() => setShowFallback(false), [activeDecision?.id])
+  useEffect(() => setShowFallback(false), [pendingDecision?.id])
 
-  /* Each card starts its own scroll at the top. */
+  /* Each step starts its own scroll at the top. */
   const bodyRef = useRef<HTMLDivElement>(null)
+  const stepKey = thinking ? 'thinking' : stepIdOf(step)
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: 0 })
-  }, [beat?.id])
+  }, [stepKey])
 
-  const finalDecision =
-    isDecision && !journey.decisions.some((d) => d.status !== 'confirmed' && d.id !== activeDecision!.id)
+  const confirmedCount = journey.decisions.filter((d) => d.status === 'confirmed').length
 
   return (
     <div className="screen ws">
       <header className="ws__bar">
         <button type="button" className="ws__icon" onClick={onLeave} aria-label="Leave this decision">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
-            <path
-              d="M14.5 6 8.5 12l6 6"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M14.5 6 8.5 12l6 6" stroke="currentColor" strokeWidth="1.9"
+              strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
 
         <button type="button" className="ws__title" onClick={onOpenJourney}>
           <span className="ws__title-text">{journey.title}</span>
+          {/* LOCK does not know how many decisions a journey will hold, so this
+              counts what has been settled rather than faking a total. Hidden
+              until there is actually something to show. */}
+          {confirmedCount > 0 && (
+            <span
+              className="ws__marks"
+              aria-label={`${confirmedCount} decided so far`}
+            >
+              {Array.from({ length: confirmedCount }).map((_, i) => (
+                <span key={i} className="ws__mark is-done" />
+              ))}
+              {pendingDecision && <span className="ws__mark" />}
+            </span>
+          )}
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden>
-            <path
-              d="M8 10.5 12 14.5l4-4"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+            <path d="M8 10.5 12 14.5l4-4" stroke="currentColor" strokeWidth="2"
+              strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
 
         <button type="button" className="ws__icon" onClick={onAddDecision} aria-label="Add a decision">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
-            <path
-              d="M12 6.5v11M6.5 12h11"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-            />
+            <path d="M12 6.5v11M6.5 12h11" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
           </svg>
         </button>
       </header>
 
-      {/* Journey maturity. Deliberately unlabelled — it is a sense, not a number. */}
+      {/* Journey maturity. Unlabelled on purpose: a sense, not a number. */}
       <div className="ws__progress" role="presentation">
         <motion.span
-          className={`ws__progress-fill ${progressDirection === 'down' ? 'is-down' : ''}`}
-          animate={{ scaleX: Math.max(0.02, journey.internal_progress) }}
-          transition={
-            progressDirection === 'down'
-              ? { duration: 1.05, ease: [0.65, 0, 0.35, 1] }
-              : { type: 'spring', stiffness: 90, damping: 22 }
-          }
+          className="ws__progress-fill"
+          animate={{ scaleX: Math.max(0.02, journey.progress) }}
+          transition={{ type: 'spring', stiffness: 90, damping: 22 }}
         />
       </div>
 
       <div className="screen__body ws__body" ref={bodyRef}>
-        <AnimatePresence mode="wait" initial={false}>
-          {beat && (
-            <motion.div key={beat.id} className="ws__card" {...cardMotion}>
-              {beat.kind === 'context' && <DecisionContext beat={beat} />}
-              {beat.kind === 'insight' && <DecisionInsight beat={beat} />}
-              {beat.kind === 'question' && <DecisionQuestion beat={beat} onAnswer={onAnswer} />}
-              {beat.kind === 'decision' && activeDecision && (
-                <DecisionMoment decision={activeDecision} />
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <JourneyTransition stepKey={stepKey}>
+          {thinking ? (
+            <LoadingState label={loadingLabel} reduced={reduced} />
+          ) : step?.kind === 'question' ? (
+            <DecisionQuestion step={step} onAnswer={onAnswer} />
+          ) : step?.kind === 'decision' ? (
+            <DecisionMoment decision={step.decision} framing={step.framing} />
+          ) : null}
+        </JourneyTransition>
       </div>
 
       <div className="screen__dock ws__dock">
         <AnimatePresence mode="wait" initial={false}>
-          {isDecision ? (
+          {showSlide ? (
             <motion.div
               key="slide"
               initial={{ opacity: 0, y: 14 }}
@@ -142,42 +129,27 @@ export default function DecisionWorkspace({
               transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
             >
               <SlideToConfirm
-                resetKey={activeDecision!.id}
-                tone={finalDecision ? 'final' : 'default'}
-                onConfirm={() => onConfirm(activeDecision!.id)}
-                disabled={inTransition}
+                resetKey={pendingDecision!.id}
+                tone={pendingDecision!.isFinal ? 'final' : 'default'}
+                reduced={reduced}
+                onConfirm={() => onConfirm(pendingDecision!.id)}
+                disabled={confirming}
               />
               <div className="subtle-row">
                 {showFallback ? (
                   <button
                     type="button"
                     className="subtle-action is-fallback"
-                    onClick={() => onConfirm(activeDecision!.id)}
+                    onClick={() => onConfirm(pendingDecision!.id)}
                   >
                     Confirm this decision
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    className="subtle-action"
-                    onClick={() => setShowFallback(true)}
-                  >
+                  <button type="button" className="subtle-action" onClick={() => setShowFallback(true)}>
                     Can’t slide?
                   </button>
                 )}
               </div>
-            </motion.div>
-          ) : beat && beat.kind !== 'question' ? (
-            <motion.div
-              key="continue"
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-            >
-              <button type="button" className="btn btn--ghost" onClick={onAdvance}>
-                Continue
-              </button>
             </motion.div>
           ) : (
             <motion.div key="none" className="ws__dock-spacer" />
@@ -186,15 +158,23 @@ export default function DecisionWorkspace({
       </div>
 
       <AnimatePresence>
-        {inTransition && (
-          <ConfirmationTransition
-            key="confirm-overlay"
-            final={transitionFinal!}
-            onDone={onTransitionDone}
+        {confirming && (
+          <ConfirmationAnimation
+            key="confirm"
+            final={!!pendingDecision?.isFinal || journey.status === 'complete'}
+            settling={settling}
+            onDone={onConfirmationDone}
             reduced={reduced}
           />
         )}
       </AnimatePresence>
     </div>
   )
+}
+
+function stepIdOf(step: Step | null): string {
+  if (!step) return 'empty'
+  if (step.kind === 'question') return step.id
+  if (step.kind === 'decision') return step.decision.id
+  return 'complete'
 }

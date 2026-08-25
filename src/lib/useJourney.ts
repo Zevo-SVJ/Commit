@@ -1,395 +1,219 @@
-import { useCallback, useMemo, useReducer } from 'react'
-import {
-  finalCheckBeat,
-  phraseFromInput,
-  resolvesJourney,
-  titleFromInput,
-  scenarioForDemo,
-  scenarioForInput,
-  type DemoId,
-  type EntryMode,
-} from './engine'
-import { uid } from './scenarios'
-import type {
-  Beat,
-  BeatEffect,
-  Decision,
-  DecisionBeat,
-  DecisionJourney,
-  QuestionBeat,
-  Scenario,
-} from './types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { DecisionJourney, Step, TurnEvent } from '../../shared/types.ts'
+import { LockRequestError, takeTurn, type LockError } from './api.ts'
+import { load, save } from './persistence.ts'
 
-export type Screen = 'home' | 'reading' | 'workspace' | 'complete'
+/**
+ * All of LOCK's state logic. Components below this render what it produces and
+ * nothing more — no component talks to the network.
+ */
 
-export interface Transition {
-  /** Bumped every time so the overlay remounts cleanly. */
-  token: number
-  decisionId: string
-  final: boolean
-}
+export type Phase =
+  /** Nothing started. */
+  | 'home'
+  /** A turn is in flight and the screen is waiting on it. */
+  | 'thinking'
+  /** A step is on screen. */
+  | 'step'
+  /** The user has slid; the confirmation is playing. */
+  | 'confirming'
+  | 'error'
 
 export interface JourneyState {
-  screen: Screen
+  phase: Phase
   journey: DecisionJourney | null
-  beats: Beat[]
-  index: number
-  reading: string[]
-  transition: Transition | null
-  /** Bumped when the flow itself wants the "add a decision" sheet opened. */
-  addDecisionRequest: number
-  /** Direction of the last progress change — the bar animates differently. */
-  progressDirection: 'up' | 'down'
+  step: Step | null
+  error: LockError | null
+  /** True while the confirmation is waiting on a turn that has not landed. */
+  settling: boolean
+  /** A turn is in flight underneath a confirmation that is still playing. */
+  turnPending: boolean
 }
 
-const initialState: JourneyState = {
-  screen: 'home',
+const INITIAL: JourneyState = {
+  phase: 'home',
   journey: null,
-  beats: [],
-  index: 0,
-  reading: [],
-  transition: null,
-  addDecisionRequest: 0,
-  progressDirection: 'up',
-}
-
-type Action =
-  | { type: 'start'; input: string; mode: EntryMode }
-  | { type: 'startDemo'; demo: DemoId }
-  | { type: 'readingDone' }
-  | { type: 'advance' }
-  | { type: 'answer'; optionId?: string; free?: string }
-  | { type: 'confirm'; decisionId: string }
-  | { type: 'transitionDone' }
-  | { type: 'addDecision'; text: string }
-  | { type: 'reset' }
-
-const clamp01 = (n: number) => Math.min(1, Math.max(0, n))
-
-function begin(scenario: Scenario): JourneyState {
-  return {
-    ...initialState,
-    screen: 'reading',
-    journey: scenario.journey,
-    beats: scenario.beats,
-    reading: scenario.reading,
-    index: 0,
-  }
-}
-
-function withProgress(state: JourneyState, journey: DecisionJourney, next: number): JourneyState {
-  const value = clamp01(next)
-  return {
-    ...state,
-    journey: { ...journey, internal_progress: value },
-    progressDirection: value < journey.internal_progress - 0.001 ? 'down' : 'up',
-  }
-}
-
-/** Applies everything an answer does to the journey and the beat queue. */
-function applyEffect(
-  state: JourneyState,
-  journey: DecisionJourney,
-  effect: BeatEffect | undefined,
-  extraKnown?: string,
-  freeText?: string,
-): JourneyState {
-  let beats = state.beats
-  const at = state.index
-
-  if (effect?.insert?.length) {
-    beats = [...beats.slice(0, at + 1), ...effect.insert, ...beats.slice(at + 1)]
-  }
-  if (effect?.append?.length) {
-    beats = [...beats, ...effect.append]
-  }
-
-  let decisions = journey.decisions
-  let title = journey.title
-
-  // The user naming the decision in their own words replaces the system's
-  // placeholder wording — and gives the journey its name.
-  if (effect?.patchDecisionFromAnswer && freeText) {
-    const phrased = phraseFromInput(freeText)
-    decisions = decisions.map((d) =>
-      d.id === effect.patchDecisionFromAnswer
-        ? {
-            ...d,
-            question: phrased.question,
-            answer: phrased.commitment,
-            rationale: 'You named this one yourself.',
-          }
-        : d,
-    )
-    title = titleFromInput(freeText)
-  }
-
-  if (effect?.patchDecision) {
-    const patch = effect.patchDecision
-    decisions = decisions.map((d) =>
-      d.id === patch.decisionId
-        ? {
-            ...d,
-            question: patch.question ?? d.question,
-            answer: patch.answer ?? d.answer,
-            rationale: patch.rationale ?? d.rationale,
-          }
-        : d,
-    )
-  }
-
-  const nextJourney: DecisionJourney = {
-    ...journey,
-    decisions,
-    title,
-    known_information: [
-      ...journey.known_information,
-      ...(effect?.known ?? []),
-      ...(extraKnown ? [extraKnown] : []),
-    ],
-    unknown_information: [...journey.unknown_information, ...(effect?.unknown ?? [])],
-    critical_unknowns: [...journey.critical_unknowns, ...(effect?.criticalUnknowns ?? [])],
-    needsFinalCheck: effect?.clearFinalCheck ? false : journey.needsFinalCheck,
-  }
-
-  const nextIndex = at + 1
-  const target = effect?.progressTo ?? beats[nextIndex]?.progressTo ?? journey.internal_progress
-
-  const advanced: JourneyState = {
-    ...state,
-    beats,
-    index: nextIndex,
-    addDecisionRequest: effect?.promptUserDecision
-      ? state.addDecisionRequest + 1
-      : state.addDecisionRequest,
-  }
-
-  const withNewProgress = withProgress(advanced, nextJourney, target)
-
-  if (effect?.complete) {
-    return {
-      ...withNewProgress,
-      screen: 'complete',
-      journey: { ...withNewProgress.journey!, status: 'resolved', internal_progress: 1 },
-    }
-  }
-  return withNewProgress
-}
-
-function reducer(state: JourneyState, action: Action): JourneyState {
-  switch (action.type) {
-    case 'start':
-      return begin(scenarioForInput(action.input, action.mode))
-
-    case 'startDemo':
-      return begin(scenarioForDemo(action.demo))
-
-    case 'readingDone':
-      return { ...state, screen: 'workspace' }
-
-    case 'advance': {
-      const { journey } = state
-      if (!journey) return state
-      const nextIndex = Math.min(state.index + 1, state.beats.length - 1)
-      const target = state.beats[nextIndex]?.progressTo ?? journey.internal_progress
-      return withProgress({ ...state, index: nextIndex }, journey, target)
-    }
-
-    case 'answer': {
-      const { journey } = state
-      const beat = state.beats[state.index]
-      if (!journey || !beat || beat.kind !== 'question') return state
-      const q = beat as QuestionBeat
-
-      if (action.optionId) {
-        const option = q.options.find((o) => o.id === action.optionId)
-        if (!option) return state
-        return applyEffect(state, journey, option.effect, option.label)
-      }
-
-      const free = (action.free ?? '').trim()
-      if (!free) return state
-      return applyEffect(state, journey, q.freeEffect, free, free)
-    }
-
-    case 'confirm': {
-      const { journey } = state
-      if (!journey || state.transition) return state
-      const decision = journey.decisions.find((d) => d.id === action.decisionId)
-      if (!decision || decision.status === 'confirmed') return state
-
-      let beats = state.beats
-      let needsFinalCheck = journey.needsFinalCheck
-
-      // The system only asks whether more remains when it genuinely cannot tell.
-      const laterDecision = beats.slice(state.index + 1).some((b) => b.kind === 'decision')
-      let asking = false
-      if (!laterDecision && needsFinalCheck) {
-        beats = [...beats, finalCheckBeat()]
-        needsFinalCheck = false
-        asking = true
-      }
-
-      // If we are about to ask whether anything remains, this cannot be the
-      // decision that ends the journey — the user has not answered yet.
-      const final = asking
-        ? false
-        : resolvesJourney(beats, state.index, { ...journey, needsFinalCheck }, action.decisionId)
-
-      const decisions = journey.decisions.map((d) =>
-        d.id === action.decisionId
-          ? { ...d, status: 'confirmed' as const, is_final: final, timestamp: Date.now() }
-          : d,
-      )
-
-      const nextJourney: DecisionJourney = {
-        ...journey,
-        decisions,
-        needsFinalCheck,
-        current_stage: journey.current_stage + 1,
-        internal_progress: final ? 1 : clamp01(Math.max(journey.internal_progress, decision.stage * 0.001 + journey.internal_progress + 0.06)),
-      }
-
-      return {
-        ...state,
-        beats,
-        journey: nextJourney,
-        progressDirection: 'up',
-        transition: { token: Date.now(), decisionId: action.decisionId, final },
-      }
-    }
-
-    case 'transitionDone': {
-      const { journey, transition } = state
-      if (!journey || !transition) return state
-
-      if (transition.final) {
-        return {
-          ...state,
-          transition: null,
-          screen: 'complete',
-          journey: { ...journey, status: 'resolved', internal_progress: 1 },
-        }
-      }
-
-      // Nothing left in the queue: the journey is over whatever the flags say.
-      const nextIndex = state.index + 1
-      if (nextIndex > state.beats.length - 1) {
-        return {
-          ...state,
-          transition: null,
-          screen: 'complete',
-          journey: { ...journey, status: 'resolved', internal_progress: 1 },
-        }
-      }
-
-      const target = state.beats[nextIndex]?.progressTo ?? journey.internal_progress
-      return withProgress({ ...state, transition: null, index: nextIndex }, journey, target)
-    }
-
-    case 'addDecision': {
-      const { journey } = state
-      const text = action.text.trim()
-      if (!journey || !text) return state
-
-      const { question, commitment } = phraseFromInput(text)
-
-      const own: Decision = {
-        id: uid('dec'),
-        question,
-        answer: commitment,
-        source: 'user',
-        status: 'proposed',
-        is_final: false,
-        stage: journey.current_stage,
-        rationale: 'You raised this yourself. It takes priority over anything I assumed.',
-        timestamp: null,
-      }
-
-      const beat: DecisionBeat = {
-        id: uid('b'),
-        kind: 'decision',
-        progressTo: clamp01(journey.internal_progress - 0.1),
-        decisionId: own.id,
-      }
-
-      const reopening = state.screen === 'complete'
-      const insertAt = reopening ? state.beats.length : state.index + 1
-      const beats = [...state.beats.slice(0, insertAt), beat, ...state.beats.slice(insertAt)]
-
-      const nextJourney: DecisionJourney = {
-        ...journey,
-        decisions: [...journey.decisions, own],
-        // The user naming a decision removes the ambiguity the fallback exists for.
-        needsFinalCheck: false,
-        status: 'active',
-        next_action: own.question,
-      }
-
-      const base: JourneyState = {
-        ...state,
-        beats,
-        screen: 'workspace',
-        index: reopening ? insertAt : state.index,
-      }
-
-      // New work means the journey is further from resolution than it was.
-      return withProgress(base, nextJourney, journey.internal_progress - 0.1)
-    }
-
-    case 'reset':
-      return initialState
-
-    default:
-      return state
-  }
+  step: null,
+  error: null,
+  settling: false,
+  turnPending: false,
 }
 
 export function useJourney() {
-  const [state, dispatch] = useReducer(reducer, initialState)
+  const [state, setState] = useState<JourneyState>(INITIAL)
 
-  const beat = state.beats[state.index] ?? null
+  /** The event to replay if the user retries. */
+  const lastEvent = useRef<{ journey: DecisionJourney | null; event: TurnEvent } | null>(null)
+  const abort = useRef<AbortController | null>(null)
+  const alive = useRef(true)
 
-  const activeDecision = useMemo(() => {
-    if (!state.journey) return null
-    if (state.transition) {
-      return state.journey.decisions.find((d) => d.id === state.transition!.decisionId) ?? null
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+      abort.current?.abort()
     }
-    if (beat?.kind !== 'decision') return null
-    return state.journey.decisions.find((d) => d.id === beat.decisionId) ?? null
-  }, [state.journey, state.transition, beat])
+  }, [])
 
-  const confirmedDecisions = useMemo(
-    () => (state.journey?.decisions ?? []).filter((d) => d.status === 'confirmed'),
-    [state.journey],
+  /* ---- restore an unfinished journey ----------------------------- */
+
+  useEffect(() => {
+    const saved = load()
+    if (!saved) return
+    setState({
+      phase: 'step',
+      journey: saved.journey,
+      step: saved.step,
+      error: null,
+      settling: false,
+      turnPending: false,
+    })
+  }, [])
+
+  useEffect(() => {
+    if (state.journey && state.step && state.phase === 'step') {
+      save({ journey: state.journey, step: state.step })
+    }
+  }, [state.journey, state.step, state.phase])
+
+  /* ---- the one path to the server -------------------------------- */
+
+  const run = useCallback(
+    async (
+      journey: DecisionJourney | null,
+      event: TurnEvent,
+      opts: { silent?: boolean } = {},
+    ) => {
+      lastEvent.current = { journey, event }
+      abort.current?.abort()
+      const controller = new AbortController()
+      abort.current = controller
+
+      // A confirmation keeps its own screen: the animation must not be
+      // interrupted by a loading state behind it.
+      if (!opts.silent) {
+        setState((s) => ({ ...s, phase: 'thinking', error: null }))
+      }
+
+      try {
+        const turn = await takeTurn(journey, event, controller.signal)
+        if (!alive.current || controller.signal.aborted) return
+        setState((s) => ({
+          ...s,
+          // A confirmation still playing owns the screen until its animation
+          // ends — the result is held back rather than cutting it short.
+          // If the animation already finished and was waiting, release it now.
+          phase: s.phase === 'confirming' && !s.settling ? 'confirming' : 'step',
+          journey: turn.journey,
+          step: turn.step,
+          error: null,
+          settling: false,
+          turnPending: false,
+        }))
+      } catch (err) {
+        if (!alive.current || (err as Error)?.name === 'AbortError') return
+        const e =
+          err instanceof LockRequestError
+            ? { code: err.code, message: err.message, retryable: err.retryable }
+            : { code: 'upstream' as const, message: 'Something went wrong.', retryable: true }
+        // The journey is never destroyed by a failed turn.
+        setState((s) => ({ ...s, phase: 'error', error: e, settling: false, turnPending: false }))
+      }
+    },
+    [],
   )
 
-  /** Decisions the user can see in the journey sheet: confirmed, active, queued. */
-  const visibleDecisions = useMemo(() => {
-    if (!state.journey) return []
-    const queued = new Set(
-      state.beats.filter((b): b is DecisionBeat => b.kind === 'decision').map((b) => b.decisionId),
-    )
-    return state.journey.decisions.filter((d) => d.status === 'confirmed' || queued.has(d.id))
-  }, [state.journey, state.beats])
+  /* ---- actions ---------------------------------------------------- */
+
+  const start = useCallback(
+    (input: string) => {
+      save(null)
+      setState({ ...INITIAL, phase: 'thinking' })
+      void run(null, { type: 'start', input })
+    },
+    [run],
+  )
+
+  const answer = useCallback(
+    (text: string) => {
+      if (!state.journey) return
+      void run(state.journey, { type: 'answer', text })
+    },
+    [run, state.journey],
+  )
+
+  const addDecision = useCallback(
+    (text: string) => {
+      if (!state.journey) return
+      void run(state.journey, { type: 'addDecision', text })
+    },
+    [run, state.journey],
+  )
+
+  /**
+   * The slide has completed. The confirmation plays immediately and the turn
+   * is fetched underneath it — the user never waits on the network to see that
+   * their gesture registered.
+   */
+  const confirm = useCallback(
+    (decisionId: string) => {
+      if (!state.journey) return
+      setState((s) => ({
+        ...s,
+        phase: 'confirming',
+        error: null,
+        settling: false,
+        turnPending: true,
+      }))
+      void run(state.journey, { type: 'confirm', decisionId }, { silent: true })
+    },
+    [run, state.journey],
+  )
+
+  /** Called when the confirmation animation finishes playing. */
+  const confirmationDone = useCallback(() => {
+    setState((s) => {
+      if (s.phase !== 'confirming') return s
+      // Still waiting on the server: hold the confirmed state rather than
+      // dropping the user back onto the decision they just committed to.
+      if (s.turnPending) return { ...s, settling: true }
+      return { ...s, phase: 'step', settling: false }
+    })
+  }, [])
+
+  const retry = useCallback(() => {
+    const last = lastEvent.current
+    if (!last) return
+    void run(last.journey, last.event)
+  }, [run])
+
+  const reset = useCallback(() => {
+    abort.current?.abort()
+    save(null)
+    setState(INITIAL)
+  }, [])
+
+  /* ---- derived ---------------------------------------------------- */
+
+  const pendingDecision =
+    state.step?.kind === 'decision' && state.step.decision.status === 'pending'
+      ? state.step.decision
+      : null
+
+  const confirmedDecisions = (state.journey?.decisions ?? []).filter(
+    (d) => d.status === 'confirmed',
+  )
 
   return {
     state,
-    beat,
-    activeDecision,
+    pendingDecision,
     confirmedDecisions,
-    visibleDecisions,
-    start: useCallback((input: string, mode: EntryMode) => dispatch({ type: 'start', input, mode }), []),
-    startDemo: useCallback((demo: DemoId) => dispatch({ type: 'startDemo', demo }), []),
-    readingDone: useCallback(() => dispatch({ type: 'readingDone' }), []),
-    advance: useCallback(() => dispatch({ type: 'advance' }), []),
-    answer: useCallback(
-      (payload: { optionId?: string; free?: string }) => dispatch({ type: 'answer', ...payload }),
-      [],
-    ),
-    confirm: useCallback((decisionId: string) => dispatch({ type: 'confirm', decisionId }), []),
-    transitionDone: useCallback(() => dispatch({ type: 'transitionDone' }), []),
-    addDecision: useCallback((text: string) => dispatch({ type: 'addDecision', text }), []),
-    reset: useCallback(() => dispatch({ type: 'reset' }), []),
+    start,
+    answer,
+    addDecision,
+    confirm,
+    confirmationDone,
+    retry,
+    reset,
   }
 }

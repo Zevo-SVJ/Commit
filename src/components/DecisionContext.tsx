@@ -1,30 +1,23 @@
 import { motion } from 'framer-motion'
-import type { ContextBeat } from '../lib/types'
 
-const list = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.075, delayChildren: 0.16 } },
-}
-const item = {
-  hidden: { opacity: 0, y: 10, filter: 'blur(5px)' },
-  show: { opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] } },
-}
-
-/** What the system understood. Stated once, then got out of the way. */
-export default function DecisionContext({ beat }: { beat: ContextBeat }) {
+/**
+ * LOCK's single line of framing, above a question or a decision.
+ *
+ * There is deliberately no screen whose only content is this. If LOCK has
+ * nothing to add that the user did not already say, the server sends null and
+ * nothing renders — silence is the normal state.
+ */
+export default function DecisionContext({ framing }: { framing: string | null }) {
+  if (!framing) return null
   return (
-    <div className="card card--context">
-      <p className="t-eyebrow">{beat.label}</p>
-      <h2 className="t-title card__lead">{beat.lead}</h2>
-
-      <motion.ul className="facts" variants={list} initial="hidden" animate="show">
-        {beat.facts.map((fact) => (
-          <motion.li key={fact} className="facts__item" variants={item}>
-            <span className="facts__dot" aria-hidden />
-            <span className="facts__text">{fact}</span>
-          </motion.li>
-        ))}
-      </motion.ul>
-    </div>
+    <motion.p
+      className="framing"
+      initial={{ opacity: 0, y: 8, filter: 'blur(5px)' }}
+      animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <span className="framing__rule" aria-hidden />
+      <span>{framing}</span>
+    </motion.p>
   )
 }

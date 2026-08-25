@@ -1,0 +1,51 @@
+/* Loading and error states — the two screens that must never feel unfinished. */
+
+.state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  min-height: 220px;
+  margin: auto 0;
+  text-align: center;
+}
+
+.state__pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--seal);
+  box-shadow: 0 0 22px 4px rgba(224, 192, 138, 0.28);
+}
+
+.state__label {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  color: var(--ink-2);
+}
+
+.state__dot {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  margin-bottom: 26px;
+}
+
+.state-screen__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.state-screen__inner {
+  max-width: 34ch;
+}
+
+.state-screen__title {
+  margin-bottom: 12px;
+}

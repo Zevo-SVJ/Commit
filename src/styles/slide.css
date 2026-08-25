@@ -5,10 +5,16 @@
    ================================================================== */
 
 .slide {
-  --track-h: 64px;
-  --thumb: 56px;
+  --track-h: 60px;
+  --thumb: 52px;
   --pad: 4px;
-  width: 100%;
+
+  /* Deliberately not full width. The control should read as an object placed
+     on the page, with room around it, rather than a bar spanning the screen.
+     ~273px at 390px wide, capped so large phones do not stretch it. */
+  width: clamp(240px, 70vw, 290px);
+  margin-inline: auto;
+
   user-select: none;
   -webkit-user-select: none;
 }
@@ -94,11 +100,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding-left: calc(var(--thumb) * 0.5);
+  /* Centred in the space the thumb is not occupying, and clear of the hint. */
+  padding-left: calc(var(--thumb) * 0.7);
+  padding-right: 26px;
   pointer-events: none;
-  font-size: 15.5px;
+  font-size: 14.5px;
   font-weight: 500;
-  letter-spacing: 0.005em;
+  letter-spacing: 0.004em;
+  white-space: nowrap;
 }
 
 /* A slow sweep of light across the words: the only idle animation here,
@@ -147,19 +156,19 @@
 
 .slide__hint {
   position: absolute;
-  right: 22px;
+  right: 16px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
-  gap: 5px;
+  gap: 4px;
   pointer-events: none;
 }
 
 .slide__hint i {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.26);
   animation: hint-pulse 2.6s var(--ease-in-out) infinite;
 }
 
@@ -223,6 +232,27 @@
   cursor: default;
 }
 
+/* Phase 2 — the capsule resolves and recedes, handing the moment to the
+   confirmation. It never disappears abruptly: the object the finger was
+   holding is still there underneath. */
+.slide.is-resolved .slide__track {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 10px 30px rgba(0, 0, 0, 0.45);
+  transform: scale(0.985);
+  opacity: 0.55;
+  transition:
+    transform 220ms var(--ease-out) 240ms,
+    opacity 220ms var(--ease-out) 240ms,
+    box-shadow 220ms var(--ease-out);
+}
+
+.slide.is-final.is-resolved .slide__track {
+  box-shadow:
+    inset 0 0 0 1px rgba(224, 192, 138, 0.28),
+    0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
 .slide.is-final.is-resolved .slide__thumb {
   background: radial-gradient(70% 70% at 50% 22%, #fffaf1 0%, #f6ead4 52%, #e6d2ad 100%);
 }
@@ -274,8 +304,9 @@
 /* Larger phones get a slightly bigger control; small ones stay reachable. */
 @media (max-width: 359px) {
   .slide {
-    --track-h: 60px;
-    --thumb: 52px;
+    --track-h: 56px;
+    --thumb: 48px;
+    width: min(84vw, 250px);
   }
 }
 

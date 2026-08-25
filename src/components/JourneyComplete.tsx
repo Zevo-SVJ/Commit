@@ -1,26 +1,28 @@
 import { motion } from 'framer-motion'
-import type { Decision, DecisionJourney as Journey } from '../lib/types'
+import type { Decision, DecisionJourney } from '../../shared/types.ts'
 import '../styles/complete.css'
 
 interface Props {
-  journey: Journey
+  journey: DecisionJourney
   decisions: Decision[]
+  closing: string
   onRestart: () => void
   onAddDecision: () => void
 }
 
-const list = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.09, delayChildren: 0.3 } },
-}
+const list = { hidden: {}, show: { transition: { staggerChildren: 0.08, delayChildren: 0.28 } } }
 const item = {
   hidden: { opacity: 0, y: 12, filter: 'blur(5px)' },
   show: { opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 0.55, ease: [0.22, 1, 0.36, 1] } },
 }
 
+const timeOf = (ts: number | null) =>
+  ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+
 export default function JourneyComplete({
   journey,
   decisions,
+  closing,
   onRestart,
   onAddDecision,
 }: Props) {
@@ -34,6 +36,7 @@ export default function JourneyComplete({
         >
           <p className="t-eyebrow done__eyebrow">Decided</p>
           <h1 className="t-display done__title">{journey.title}</h1>
+          {closing && <p className="t-quiet done__closing">{closing}</p>}
         </motion.div>
 
         <motion.ol className="done__list" variants={list} initial="hidden" animate="show">
@@ -41,14 +44,9 @@ export default function JourneyComplete({
             <motion.li key={d.id} className="done__item" variants={item}>
               <span className="done__seal" aria-hidden />
               <div>
-                <p className="done__answer">{d.answer}</p>
+                <p className="done__answer">{d.commitment}</p>
                 <p className="done__meta">
-                  {d.timestamp
-                    ? new Date(d.timestamp).toLocaleTimeString([], {
-                        hour: 'numeric',
-                        minute: '2-digit',
-                      })
-                    : ''}
+                  {timeOf(d.confirmedAt)}
                   {d.source === 'user' && <span className="done__own">Yours</span>}
                 </p>
               </div>

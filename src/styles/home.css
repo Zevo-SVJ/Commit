@@ -36,7 +36,7 @@
     padding-bottom: 16px;
   }
 
-  .demos {
+  .examples {
     display: none;
   }
 }
@@ -49,12 +49,12 @@
   margin-bottom: 26px;
 }
 
-.home__field {
+.field {
   position: relative;
   padding-bottom: 14px;
 }
 
-.home__input {
+.field__input {
   display: block;
   width: 100%;
   border: 0;
@@ -69,16 +69,16 @@
   caret-color: var(--seal);
 }
 
-.home__input::placeholder {
+.field__input::placeholder {
   color: var(--ink-4);
 }
 
-.home__input:focus {
+.field__input:focus {
   outline: none;
 }
 
 /* A single hairline that lights up on focus — the whole chrome of the field. */
-.home__rule {
+.field__rule {
   position: absolute;
   left: 0;
   right: 0;
@@ -88,7 +88,7 @@
   overflow: hidden;
 }
 
-.home__rule::after {
+.field__rule::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -98,8 +98,8 @@
   transition: transform 520ms var(--ease-out);
 }
 
-.home__field:focus-within .home__rule::after,
-.home__field.is-filled .home__rule::after {
+.field:focus-within .field__rule::after,
+.field.is-filled .field__rule::after {
   transform: scaleX(1);
 }
 
@@ -125,7 +125,7 @@
 
 /* ---- demos ------------------------------------------------------- */
 
-.demos {
+.examples {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -134,23 +134,23 @@
   min-height: 30px;
 }
 
-.kb-open .demos {
+.kb-open .examples {
   display: none;
 }
 
-.demos__label {
+.examples__label {
   font-size: 12.5px;
   color: var(--ink-4);
   letter-spacing: 0.01em;
 }
 
-.demos__row {
+.examples__row {
   display: flex;
   align-items: center;
   gap: 2px;
 }
 
-.demos__chip {
+.examples__chip {
   font-size: 12.5px;
   font-weight: 500;
   color: var(--ink-2);
@@ -161,14 +161,31 @@
     color 200ms var(--ease-out);
 }
 
-.demos__chip:hover,
-.demos__chip:focus-visible {
+.examples__chip:hover,
+.examples__chip:focus-visible {
   background: var(--panel);
   color: var(--ink);
 }
 
-.demos__sep {
+.examples__sep {
   width: 1px;
   height: 11px;
   background: var(--hair-strong);
+}
+
+/* The two example situations. Deliberately quiet: a way in, not a feature. */
+.examples__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.field {
+  margin-top: 26px;
+}
+
+.opening {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }

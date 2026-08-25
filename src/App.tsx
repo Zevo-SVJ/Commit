@@ -1,12 +1,12 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useState } from 'react'
 import AddDecisionSheet from './components/AddDecisionSheet'
-import DecisionHome from './components/DecisionHome'
 import DecisionJourneySheet from './components/DecisionJourney'
 import DecisionWorkspace from './components/DecisionWorkspace'
+import ErrorState from './components/ErrorState'
 import JourneyComplete from './components/JourneyComplete'
-import Reading from './components/Reading'
-import type { EntryMode } from './lib/engine'
+import LoadingState from './components/LoadingState'
+import LockHome from './components/LockHome'
 import { useAppViewport, usePrefersReducedMotion } from './lib/useAppViewport'
 import { useJourney } from './lib/useJourney'
 
@@ -14,7 +14,14 @@ const screenMotion = {
   initial: { opacity: 0, y: 10 },
   animate: { opacity: 1, y: 0 },
   exit: { opacity: 0, y: -8 },
-  transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1] as const },
+  transition: { duration: 0.28, ease: [0.22, 1, 0.36, 1] as const },
+}
+
+/** What LOCK is doing, said plainly. Never "AI is thinking". */
+function loadingLabel(hasJourney: boolean, decided: number): string {
+  if (!hasJourney) return 'Understanding'
+  if (decided > 0) return 'Finding what’s left'
+  return 'Looking at what matters'
 }
 
 export default function App() {
@@ -23,49 +30,42 @@ export default function App() {
 
   const {
     state,
-    beat,
-    activeDecision,
+    pendingDecision,
     confirmedDecisions,
-    visibleDecisions,
     start,
-    startDemo,
-    readingDone,
-    advance,
     answer,
-    confirm,
-    transitionDone,
     addDecision,
+    confirm,
+    confirmationDone,
+    retry,
     reset,
   } = useJourney()
 
   const [journeyOpen, setJourneyOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
 
-  /* The flow itself can ask for the add-decision sheet (the §33 fallback). */
-  useEffect(() => {
-    if (state.addDecisionRequest > 0) {
-      setJourneyOpen(false)
-      setAddOpen(true)
-    }
-  }, [state.addDecisionRequest])
+  const { journey, step, phase, error } = state
+  // The confirmation owns the screen until it has finished playing, even once
+  // the turn that completes the journey has already landed.
+  const complete =
+    journey?.status === 'complete' && step?.kind === 'complete' && phase !== 'confirming'
 
-  /* Browser back leaves the journey instead of leaving the site. */
+  /* Browser back leaves the journey rather than the site. */
   useEffect(() => {
-    if (state.screen === 'home') return
-    window.history.pushState({ commit: true }, '')
+    if (phase === 'home') return
+    window.history.pushState({ lock: true }, '')
     const onPop = () => {
       if (addOpen || journeyOpen) {
         setAddOpen(false)
         setJourneyOpen(false)
-        window.history.pushState({ commit: true }, '')
+        window.history.pushState({ lock: true }, '')
         return
       }
       reset()
     }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
-    // Re-armed whenever we enter a new screen so one back press is one step.
-  }, [state.screen, reset, addOpen, journeyOpen])
+  }, [phase, reset, addOpen, journeyOpen])
 
   const leave = useCallback(() => {
     setJourneyOpen(false)
@@ -75,76 +75,73 @@ export default function App() {
 
   const onAdd = useCallback(
     (text: string) => {
-      addDecision(text)
       setAddOpen(false)
+      addDecision(text)
     },
     [addDecision],
   )
 
-  const onStart = useCallback(
-    (input: string, mode: EntryMode) => start(input, mode),
-    [start],
-  )
-
-  const committing = state.transition !== null
+  const label = loadingLabel(!!journey, confirmedDecisions.length)
+  const showHome = phase === 'home' || (!journey && phase !== 'thinking')
 
   return (
     <div className={`app ${reduced ? 'no-motion' : ''}`}>
       <div className="app__frame">
-        <div className={`aura ${committing ? 'aura--commit' : ''}`} aria-hidden />
+        <div className={`aura ${phase === 'confirming' ? 'aura--commit' : ''}`} aria-hidden />
         <div className="grain" aria-hidden />
 
         <AnimatePresence mode="wait" initial={false}>
-          {state.screen === 'home' && (
+          {phase === 'error' && error ? (
+            <motion.div key="error" className="screen" {...screenMotion}>
+              <ErrorState error={error} onRetry={retry} onLeave={leave} />
+            </motion.div>
+          ) : showHome ? (
             <motion.div key="home" className="screen" {...screenMotion}>
-              <DecisionHome onStart={onStart} onDemo={startDemo} />
+              <LockHome onStart={start} />
             </motion.div>
-          )}
-
-          {state.screen === 'reading' && (
-            <motion.div key="reading" className="screen" {...screenMotion}>
-              <Reading lines={state.reading} onDone={readingDone} reduced={reduced} />
+          ) : complete && journey ? (
+            <motion.div key="complete" className="screen" {...screenMotion}>
+              <JourneyComplete
+                journey={journey}
+                decisions={confirmedDecisions}
+                closing={step.kind === 'complete' ? step.closing : ''}
+                onRestart={leave}
+                onAddDecision={() => setAddOpen(true)}
+              />
             </motion.div>
-          )}
-
-          {state.screen === 'workspace' && state.journey && (
+          ) : journey ? (
             <motion.div key="workspace" className="screen" {...screenMotion}>
               <DecisionWorkspace
-                journey={state.journey}
-                beat={beat}
-                activeDecision={activeDecision}
-                transitionFinal={state.transition ? state.transition.final : null}
-                progressDirection={state.progressDirection}
+                journey={journey}
+                step={step}
+                phase={phase}
+                settling={state.settling}
+                pendingDecision={pendingDecision}
                 reduced={reduced}
+                loadingLabel={label}
                 onAnswer={answer}
-                onAdvance={advance}
                 onConfirm={confirm}
-                onTransitionDone={transitionDone}
+                onConfirmationDone={confirmationDone}
                 onOpenJourney={() => setJourneyOpen(true)}
                 onAddDecision={() => setAddOpen(true)}
                 onLeave={leave}
               />
             </motion.div>
-          )}
-
-          {state.screen === 'complete' && state.journey && (
-            <motion.div key="complete" className="screen" {...screenMotion}>
-              <JourneyComplete
-                journey={state.journey}
-                decisions={confirmedDecisions}
-                onRestart={leave}
-                onAddDecision={() => setAddOpen(true)}
-              />
+          ) : (
+            /* The very first turn, before a journey exists. */
+            <motion.div key="opening" className="screen" {...screenMotion}>
+              <div className="screen__body opening">
+                <OpeningState label={label} reduced={reduced} />
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {state.journey && (
+        {journey && (
           <DecisionJourneySheet
             open={journeyOpen}
-            journey={state.journey}
-            decisions={visibleDecisions}
-            activeId={activeDecision?.id ?? null}
+            journey={journey}
+            pendingId={pendingDecision?.id ?? null}
             onClose={() => setJourneyOpen(false)}
             onAdd={() => {
               setJourneyOpen(false)
@@ -157,4 +154,8 @@ export default function App() {
       </div>
     </div>
   )
+}
+
+function OpeningState({ label, reduced }: { label: string; reduced: boolean }) {
+  return <LoadingState label={label} reduced={reduced} />
 }

@@ -1,24 +1,22 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useLayoutEffect, useRef, useState } from 'react'
-import type { QuestionBeat } from '../lib/types'
+import type { QuestionStep } from '../../shared/types.ts'
+import DecisionContext from './DecisionContext'
 
-const list = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.06, delayChildren: 0.2 } },
-}
+const list = { hidden: {}, show: { transition: { staggerChildren: 0.06, delayChildren: 0.18 } } }
 const item = {
   hidden: { opacity: 0, y: 12 },
   show: { opacity: 1, y: 0, transition: { duration: 0.44, ease: [0.22, 1, 0.36, 1] } },
 }
 
 interface Props {
-  beat: QuestionBeat
-  onAnswer: (payload: { optionId?: string; free?: string }) => void
+  step: QuestionStep
+  onAnswer: (text: string) => void
 }
 
-/** One question. Answering it is a tap, or a sentence if the taps are wrong. */
-export default function DecisionQuestion({ beat, onAnswer }: Props) {
-  const [writing, setWriting] = useState(false)
+/** One question. LOCK only reaches this screen when the answer would change something. */
+export default function DecisionQuestion({ step, onAnswer }: Props) {
+  const [writing, setWriting] = useState(step.options.length === 0)
   const [text, setText] = useState('')
   const [chosen, setChosen] = useState<string | null>(null)
   const areaRef = useRef<HTMLTextAreaElement>(null)
@@ -30,25 +28,24 @@ export default function DecisionQuestion({ beat, onAnswer }: Props) {
     el.style.height = `${Math.min(el.scrollHeight, 150)}px`
   }, [text, writing])
 
-  const pick = (id: string) => {
+  const pick = (option: string) => {
     if (chosen) return
-    setChosen(id)
-    // Let the selection register visually before the card leaves.
-    window.setTimeout(() => onAnswer({ optionId: id }), 200)
+    setChosen(option)
+    // Let the selection register before the card leaves.
+    window.setTimeout(() => onAnswer(option), 190)
   }
 
   const send = () => {
     const value = text.trim()
     if (!value) return
     areaRef.current?.blur()
-    onAnswer({ free: value })
+    onAnswer(value)
   }
 
   return (
-    <div className="card card--question">
-      <p className="t-eyebrow">One question</p>
-      <h2 className="t-display card__prompt">{beat.prompt}</h2>
-      {beat.sub && <p className="t-quiet card__sub">{beat.sub}</p>}
+    <div className="card">
+      <DecisionContext framing={step.framing} />
+      <h2 className="t-display card__prompt">{step.prompt}</h2>
 
       <AnimatePresence mode="wait" initial={false}>
         {!writing ? (
@@ -60,17 +57,17 @@ export default function DecisionQuestion({ beat, onAnswer }: Props) {
             animate="show"
             exit={{ opacity: 0, transition: { duration: 0.18 } }}
           >
-            {beat.options.map((option) => (
-              <motion.li key={option.id} variants={item}>
+            {step.options.map((option) => (
+              <motion.li key={option} variants={item}>
                 <button
                   type="button"
-                  className={`option ${chosen === option.id ? 'is-chosen' : ''} ${
-                    chosen && chosen !== option.id ? 'is-dimmed' : ''
+                  className={`option ${chosen === option ? 'is-chosen' : ''} ${
+                    chosen && chosen !== option ? 'is-dimmed' : ''
                   }`}
-                  onClick={() => pick(option.id)}
+                  onClick={() => pick(option)}
                   disabled={!!chosen}
                 >
-                  <span className="option__label">{option.label}</span>
+                  <span className="option__label">{option}</span>
                   <span className="option__mark" aria-hidden />
                 </button>
               </motion.li>
@@ -96,16 +93,20 @@ export default function DecisionQuestion({ beat, onAnswer }: Props) {
                   send()
                 }
               }}
-              placeholder={beat.freePlaceholder ?? 'In your own words…'}
+              placeholder="In your own words…"
               rows={2}
-              autoFocus
+              autoFocus={step.options.length > 0}
               enterKeyHint="send"
-              aria-label={beat.prompt}
+              aria-label={step.prompt}
             />
             <div className="write__actions">
-              <button type="button" className="btn btn--bare" onClick={() => setWriting(false)}>
-                Back
-              </button>
+              {step.options.length > 0 ? (
+                <button type="button" className="btn btn--bare" onClick={() => setWriting(false)}>
+                  Back
+                </button>
+              ) : (
+                <span />
+              )}
               <button
                 type="button"
                 className="write__send"
@@ -128,7 +129,7 @@ export default function DecisionQuestion({ beat, onAnswer }: Props) {
         )}
       </AnimatePresence>
 
-      {beat.allowFree && !writing && !chosen && (
+      {step.allowFree && !writing && !chosen && (
         <button type="button" className="subtle-action card__aside" onClick={() => setWriting(true)}>
           None of these — let me say it
         </button>
