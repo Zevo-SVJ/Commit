@@ -347,3 +347,68 @@ test('an AQ. credential reaches Google as a bearer token, end to end', async () 
     delete process.env.GEMINI_BASE_URL
   }
 })
+
+/* ---- the probe must explain itself ------------------------------------ */
+
+test('with no credential the probe says so, instead of "not probed"', async () => {
+  delete process.env.GEMINI_API_KEY
+  delete process.env.OPENAI_API_KEY
+  delete process.env.LOCK_PROVIDER
+
+  const fn = await bundled('api/health.ts', 'no-cred')
+  const h = await host(fn.default)
+  try {
+    const json = await (await fetch(`${h.url}/api/health?probe=1`)).json()
+
+    // The bug: this used to come back null, rendering as "not probed", which
+    // reads as a missing flag rather than a missing credential.
+    assert.notEqual(json.probe, null, 'the probe must run and report')
+    assert.equal(json.probe.verdict, 'no_credential')
+    assert.match(json.probe.advice, /GEMINI_API_KEY is not set/)
+    assert.match(json.probe.advice, /redeploy/)
+
+    // Both credentials are reported, not just the selected provider's.
+    assert.equal(json.credentials.GEMINI_API_KEY.present, false)
+    assert.equal(json.credentials.OPENAI_API_KEY.present, false)
+    assert.ok(Array.isArray(json.configVars))
+  } finally { h.close() }
+})
+
+test('an AQ. credential is recognised as an auth key, and never returned', async () => {
+  delete process.env.OPENAI_API_KEY
+  delete process.env.LOCK_PROVIDER
+  process.env.GEMINI_API_KEY = 'AQ.Ab8RN6REALSHAPEDAUTHKEYzzzzzzzzzzzzzzzzzzzzzzzzz'
+
+  const fn = await bundled('api/health.ts', 'aq-kind')
+  const h = await host(fn.default)
+  try {
+    const json = await (await fetch(`${h.url}/api/health?probe=1`)).json()
+    assert.equal(json.provider, 'gemini')
+    assert.equal(json.credentials.GEMINI_API_KEY.present, true)
+    assert.equal(json.credentials.GEMINI_API_KEY.kind, 'google-auth-key')
+    assert.equal(json.credentials.GEMINI_API_KEY.prefix, 'AQ.')
+    // The variable is visible by name.
+    assert.ok(json.configVars.some((v: any) => v.name === 'GEMINI_API_KEY' && v.set))
+    assert.ok(!JSON.stringify(json).includes('Ab8RN6REALSHAPED'), 'never the credential itself')
+  } finally { h.close(); delete process.env.GEMINI_API_KEY }
+})
+
+test('the probe flag is accepted in every form it might arrive in', async () => {
+  process.env.GEMINI_API_KEY = 'AQ.Ab8RN6flagtestzzzzzzzzzzzzzzzzzzz'
+  delete process.env.OPENAI_API_KEY
+  const fn = await bundled('api/health.ts', 'flag-forms')
+  const h = await host(fn.default)
+  try {
+    // A rewrite that drops or rewrites the query must not silently downgrade
+    // the request to the cheap check.
+    for (const path of ['/api/health?probe=1', '/api/health?probe=true', '/api/health?probe', '/probe']) {
+      const json = await (await fetch(`${h.url}${path}`)).json()
+      assert.notEqual(json.probe, null, `${path} must run the probe`)
+    }
+    // And it can still be turned off deliberately.
+    for (const path of ['/api/health', '/api/health?probe=0', '/api/health?probe=false']) {
+      const json = await (await fetch(`${h.url}${path}`)).json()
+      assert.equal(json.probe, null, `${path} must not run the probe`)
+    }
+  } finally { h.close(); delete process.env.GEMINI_API_KEY }
+})

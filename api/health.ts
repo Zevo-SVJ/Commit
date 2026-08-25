@@ -40,6 +40,27 @@ function geminiAuth(key: string): Record<string, string> {
   return bearer ? { authorization: `Bearer ${key}` } : { 'x-goog-api-key': key }
 }
 
+/** Everything about a credential except the credential. */
+function describeKey(raw: string) {
+  const trimmed = raw.trim()
+  return {
+    present: raw.length > 0,
+    length: raw.length,
+    prefix: raw ? raw.slice(0, 3) : null,
+    hasWhitespace: raw !== trimmed,
+    // AQ. auth keys are bearer tokens; AIza standard keys are API keys.
+    kind: trimmed.startsWith('AQ.')
+      ? 'google-auth-key'
+      : trimmed.startsWith('AIza')
+        ? 'google-standard-key'
+        : trimmed.startsWith('sk-')
+          ? 'openai-key'
+          : trimmed
+            ? 'unrecognised'
+            : null,
+  }
+}
+
 /** Nothing key-shaped may travel back in a message. */
 function scrub(text: string): string {
   return text
@@ -367,12 +388,26 @@ ${
     ? `<h2>Models this key can use</h2><p class="hint">${body.probe.models.join(', ')}</p>`
     : ''
 }
-<h2>Key</h2>
-${row('Present', body.key.present)}
-${row('Length', body.key.length)}
-${row('Prefix', body.key.prefix)}
-${row('Well formed', body.key.looksWellFormed)}
-${row('Stray whitespace', body.key.hasWhitespace)}
+<h2>Credentials</h2>
+${['GEMINI_API_KEY', 'OPENAI_API_KEY']
+  .map((name) => {
+    const c = body.credentials[name]
+    return c.present
+      ? `${row(name, `${c.kind ?? 'unrecognised'} · ${c.length} chars · ${c.prefix}…`)}${
+          c.hasWhitespace ? row(`${name} whitespace`, 'YES — trim it') : ''
+        }`
+      : row(name, 'not set')
+  })
+  .join('')}
+
+<h2>Variables this function can see</h2>
+${
+  body.configVars.length
+    ? body.configVars
+        .map((v: any) => row(v.name, v.set ? 'set' : 'present but empty'))
+        .join('')
+    : '<p class="hint">None. No GEMINI_, GOOGLE_, OPENAI_ or LOCK_ variable reached this deployment — environment variables only apply to deployments made after they were added.</p>'
+}
 <h2>Deployment</h2>
 ${row('Provider', body.provider)}
 ${body.probe?.authMode ? row('Auth transport', body.probe.authMode) : ''}
@@ -391,11 +426,46 @@ export default async function handler(req: any, b?: any) {
   const rawKey = process.env[KEY_VAR] ?? ''
   const key = rawKey.trim()
 
+  /* Reporting only the selected provider's key made a missing Gemini key look
+     like a missing OpenAI key: with no GEMINI_API_KEY the selection falls back
+     to openai, and the row then described the wrong variable entirely. */
+  const credentials = {
+    GEMINI_API_KEY: describeKey(process.env.GEMINI_API_KEY ?? ''),
+    OPENAI_API_KEY: describeKey(process.env.OPENAI_API_KEY ?? ''),
+  }
+
+  /* Names only, never values. This is what distinguishes "the variable is not
+     set" from "it is set under a different name" or "set but empty". */
+  const configVars = Object.keys(process.env)
+    .filter((n) => /^(GEMINI|GOOGLE|OPENAI|LOCK)_/i.test(n))
+    .sort()
+    .map((n) => ({ name: n, set: (process.env[n] ?? '').trim().length > 0 }))
+
   const url = new URL(req?.url ?? '/', 'http://localhost')
-  const wantsProbe = url.searchParams.get('probe') === '1'
+
+  /* Any form of the flag counts, and the /probe path counts on its own — a
+     rewrite that does not carry its query through would otherwise silently
+     downgrade the request to the cheap check. */
+  const flag = url.searchParams.get('probe')
+  const wantsProbe =
+    flag !== null
+      ? flag !== '0' && flag.toLowerCase() !== 'false'
+      : /(^|\/)probe\/?$/.test(url.pathname)
 
   let probe: Probe | null = null
-  if (wantsProbe && key) {
+  if (wantsProbe && !key) {
+    // Say so, rather than rendering "not probed" as though the flag was missing.
+    probe = {
+      keyAccepted: null, modelAvailable: null, canGenerate: null,
+      verdict: 'no_credential', providerCode: null, link: null,
+      authMode: IS_GEMINI ? 'bearer' : undefined,
+      advice: `No ${KEY_VAR} reached this function. ${
+        credentials.GEMINI_API_KEY.present
+          ? 'GEMINI_API_KEY is set, so the selected provider is wrong — check LOCK_PROVIDER.'
+          : 'GEMINI_API_KEY is not set in this deployment. Environment variables only apply to deployments made after they were added, so add it and redeploy. The variables this function can see are listed below.'
+      }`,
+    }
+  } else if (wantsProbe && key) {
     const first = IS_GEMINI ? await checkGeminiKey(key) : await checkKey(key)
     // Only ask about credit once the key and the model have both checked out.
     // Otherwise a passing credit check would overwrite the real verdict.
@@ -427,12 +497,14 @@ export default async function handler(req: any, b?: any) {
     },
     provider: PROVIDER,
     providerKeyVariable: KEY_VAR,
+    credentials,
+    configVars,
     model: MODEL,
     baseUrlOverridden: Boolean(
       IS_GEMINI ? process.env.GEMINI_BASE_URL : process.env.OPENAI_BASE_URL,
     ),
     probe,
-    probeHint: wantsProbe ? null : 'add ?probe=1 to test the key against the provider',
+    probeHint: wantsProbe ? null : 'add ?probe=1 to test the credential against the provider',
     node: process.version,
     region: process.env.VERCEL_REGION ?? null,
     env: process.env.VERCEL_ENV ?? 'local',
