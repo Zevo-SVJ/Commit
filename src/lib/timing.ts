@@ -12,11 +12,16 @@ export const CONFIRM = {
   /** 2 — the capsule resolves; the overlay takes over. */
   resolve: 200,
   /** 3 — the checkmark is drawn, not revealed. */
-  draw: 360,
+  draw: 340,
   /** 4 — a single settling beat. */
   settle: 140,
-  /** 5 — the message, held long enough to read. */
-  message: 560,
+  /** How long the message takes to fade in. It is only fully readable after. */
+  messageFade: 220,
+  /**
+   * 5 — the message. Sized so that `message - messageFade` leaves a genuinely
+   * readable window at full opacity, not just time spent fading in.
+   */
+  message: 680,
   /** 6 — out. */
   exit: 200,
 } as const
@@ -26,12 +31,24 @@ export const CONFIRM_REDUCED = {
   resolve: 60,
   draw: 1,
   settle: 40,
-  message: 420,
+  messageFade: 80,
+  message: 520,
   exit: 100,
 } as const
 
 export type ConfirmTiming = typeof CONFIRM
 
-/** Total wall time from release to the next step appearing. */
+/**
+ * The designed length of the sequence, from release to the overlay leaving.
+ *
+ * `resolve` is not added: the capsule resolving and the overlay fading in
+ * happen while the checkmark is already drawing, so it overlaps rather than
+ * extends. Real wall time can exceed this when the turn has not landed yet —
+ * the confirmation waits rather than cutting itself short.
+ */
 export const confirmTotal = (t: ConfirmTiming | typeof CONFIRM_REDUCED) =>
-  t.hold + t.resolve + t.draw + t.settle + t.message + t.exit
+  t.hold + t.draw + t.settle + t.message + t.exit
+
+/** How long the message is legible at full opacity. */
+export const messageDwell = (t: ConfirmTiming | typeof CONFIRM_REDUCED) =>
+  t.message - t.messageFade + t.exit

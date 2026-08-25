@@ -46,6 +46,13 @@ export default function SlideToConfirm({
   const thumbRef = useRef<HTMLDivElement>(null)
   const grabRef = useRef<Grab | null>(null)
   const atEndRef = useRef(false)
+  /**
+   * Where the keyboard has stepped the thumb to. Tracked separately because
+   * each press animates, so reading the motion value mid-spring gives the
+   * position it happens to be passing through, not the one already asked for —
+   * which made repeated presses compound to less than the full track.
+   */
+  const keyTargetRef = useRef(0)
 
   const [maxX, setMaxX] = useState(0)
   const [dragging, setDragging] = useState(false)
@@ -72,6 +79,8 @@ export default function SlideToConfirm({
   useEffect(() => {
     grabRef.current = null
     atEndRef.current = false
+    keyTargetRef.current = 0
+    setAriaValue(0)
     setDragging(false)
     setResolved(false)
     x.set(0)
@@ -87,16 +96,31 @@ export default function SlideToConfirm({
   const hintOpacity = useTransform(progress, [0, 0.16], [1, 0])
   const glowOpacity = useTransform(progress, [0.45, 1], [0, 1])
 
+  /**
+   * A slider's value is the value it has been set to, not the position its
+   * animation happens to be passing through — so this follows the target.
+   */
+  const [ariaValue, setAriaValue] = useState(0)
+  const setTarget = useCallback(
+    (v: number) => {
+      keyTargetRef.current = v
+      setAriaValue(maxX > 0 ? Math.round((v / maxX) * 100) : 0)
+    },
+    [maxX],
+  )
+
   /* ---- gesture --------------------------------------------------- */
 
   const springBack = useCallback(() => {
     atEndRef.current = false
+    setTarget(0)
     animate(x, 0, { type: 'spring', stiffness: 520, damping: 38, mass: 0.9 })
-  }, [x])
+  }, [x, setTarget])
 
   const commit = useCallback(() => {
     if (resolved) return
     setResolved(true)
+    setAriaValue(100)
     haptic('commit')
     animate(x, maxX, { type: 'spring', stiffness: 900, damping: 62 })
     // Phase 1: the completed capsule is held, so the gesture is seen to have
@@ -138,6 +162,7 @@ export default function SlideToConfirm({
 
     const next = Math.min(maxX, Math.max(0, grab.originThumb + delta))
     x.set(next)
+    setTarget(next)
 
     // A single tick when the thumb first meets the end, and again if it leaves.
     const end = isAtEnd(next)
@@ -172,7 +197,10 @@ export default function SlideToConfirm({
   const nudge = (direction: 1 | -1) => {
     if (disabled || resolved || maxX <= 0) return
     const step = maxX / 8
-    const next = Math.min(maxX, Math.max(0, x.get() + step * direction))
+    // Step from the last requested position, not from wherever the spring has
+    // reached, so eight presses always cover the whole track.
+    const next = Math.min(maxX, Math.max(0, keyTargetRef.current + step * direction))
+    setTarget(next)
     animate(x, next, { type: 'spring', stiffness: 700, damping: 46 })
     if (isAtEnd(next)) {
       atEndRef.current = true
@@ -194,10 +222,12 @@ export default function SlideToConfirm({
         break
       case 'Home':
         e.preventDefault()
+        setTarget(0)
         animate(x, 0, { type: 'spring', stiffness: 700, damping: 46 })
         break
       case 'End':
         e.preventDefault()
+        setTarget(maxX)
         animate(x, maxX, { type: 'spring', stiffness: 700, damping: 46 })
         atEndRef.current = maxX > 24
         break
@@ -205,15 +235,16 @@ export default function SlideToConfirm({
       case ' ':
         // Still requires the thumb to be at the end — never a bare press.
         e.preventDefault()
-        if (isAtEnd(x.get())) commit()
+        if (isAtEnd(keyTargetRef.current)) {
+          x.set(maxX)
+          commit()
+        }
         break
       default:
         break
     }
   }
 
-  const [ariaValue, setAriaValue] = useState(0)
-  useEffect(() => progress.on('change', (v) => setAriaValue(Math.round(v * 100))), [progress])
 
   return (
     <div

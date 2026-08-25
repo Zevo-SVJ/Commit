@@ -255,3 +255,28 @@ test('response payloads are unwrapped from either Responses API shape', () => {
   )
   assert.throws(() => extractJson({ output: [] }), ProviderError)
 })
+
+/* ---- the confirmation sequence -------------------------------------- */
+
+test('the confirmation sequence is designed to run 1.2-1.8s', async () => {
+  const { CONFIRM, CONFIRM_REDUCED, confirmTotal } = await import('../src/lib/timing.ts')
+  const total = confirmTotal(CONFIRM)
+  assert.ok(total >= 1200 && total <= 1800, `${total}ms`)
+  // Every phase must be long enough to be perceived as its own beat.
+  for (const [name, ms] of Object.entries(CONFIRM)) {
+    assert.ok(ms >= 140, `${name} is ${ms}ms — too short to register`)
+  }
+  // The message must be legible at full opacity, not merely fading in.
+  const { messageDwell } = await import('../src/lib/timing.ts')
+  assert.ok(
+    CONFIRM.message - CONFIRM.messageFade >= 400,
+    `only ${CONFIRM.message - CONFIRM.messageFade}ms at full opacity`,
+  )
+  assert.ok(messageDwell(CONFIRM) >= 600, `${messageDwell(CONFIRM)}ms legible`)
+  // Reduced motion shortens the movement but still lets the line be read.
+  assert.ok(confirmTotal(CONFIRM_REDUCED) < total)
+  assert.ok(
+    CONFIRM_REDUCED.message - CONFIRM_REDUCED.messageFade >= 400,
+    'reduced motion must stay readable',
+  )
+})

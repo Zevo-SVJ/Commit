@@ -114,8 +114,8 @@ export default function ConfirmationAnimation({
             initial={{ opacity: 0, y: 6 }}
             animate={showMessage ? { opacity: 1, y: 0 } : { opacity: 0, y: 6 }}
             /* Arrives quickly so the line spends its time being readable
-               rather than fading in. */
-            transition={{ duration: reduced ? 0.08 : 0.22, ease: [0.22, 1, 0.36, 1] }}
+               rather than fading in. The hold above is sized against this. */
+            transition={{ duration: t.messageFade / 1000, ease: [0.22, 1, 0.36, 1] }}
           >
             {final ? 'Decision complete.' : 'Decision confirmed.'}
           </motion.p>

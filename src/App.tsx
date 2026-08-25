@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, MotionConfig, motion } from 'framer-motion'
 import { useCallback, useEffect, useState } from 'react'
 import AddDecisionSheet from './components/AddDecisionSheet'
 import DecisionJourneySheet from './components/DecisionJourney'
@@ -85,6 +85,10 @@ export default function App() {
   const showHome = phase === 'home' || (!journey && phase !== 'thinking')
 
   return (
+    /* reducedMotion="user" makes every motion component below drop transforms
+       and keep opacity when the OS asks for it. The .no-motion class only
+       reaches CSS transitions, which is not where most of the movement is. */
+    <MotionConfig reducedMotion="user">
     <div className={`app ${reduced ? 'no-motion' : ''}`}>
       <div className="app__frame">
         <div className={`aura ${phase === 'confirming' ? 'aura--commit' : ''}`} aria-hidden />
@@ -153,6 +157,7 @@ export default function App() {
         <AddDecisionSheet open={addOpen} onClose={() => setAddOpen(false)} onAdd={onAdd} />
       </div>
     </div>
+    </MotionConfig>
   )
 }
 

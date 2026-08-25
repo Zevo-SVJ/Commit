@@ -112,4 +112,20 @@ Built to sit inside real Safari and Chrome rather than to simulate them.
 scrolls — screens scroll internally — so the slide keeps clear of the toolbar
 whether it is expanded, collapsing on scroll, or replaced by the keyboard.
 
-Verified in Chromium at 390×844, 393×852, 430×932 and desktop.
+Verified in Chromium at 390×844, 393×852, 430×932, both landscape orientations,
+and desktop — including rotation mid-journey, the keyboard opening and closing,
+and the toolbar expanding and collapsing.
+
+WebKit is not installed in the environment this was built in, so iOS Safari
+itself has not been exercised. Chromium with `visualViewport` emulation is the
+closest available proxy.
+
+## Known gaps
+
+- **The model's behaviour is unverified against a live model.** There was no API
+  key available while building. The structural guards against chatbot behaviour
+  are tested; the prompt's judgement is not.
+- **No streaming.** A turn is a small structured object, not prose, so there is
+  nothing to stream progressively — the loading state covers the wait instead.
+- **No database.** `shared/types.ts` is shaped for one, and journeys persist in
+  `sessionStorage` for the current sitting.
