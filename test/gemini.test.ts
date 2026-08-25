@@ -394,3 +394,49 @@ test('the probe flags a model the key cannot use, and says which it can', async 
     delete process.env.GEMINI_MODEL
   }
 })
+
+/* ---- thinking budget --------------------------------------------------- */
+
+test('the output budget leaves room for thinking, and is configurable', async () => {
+  const s = await mockGemini(okReply({ ok: true }))
+  try {
+    const provider = createGeminiProvider({
+      GEMINI_API_KEY: 'k', GEMINI_BASE_URL: s.url,
+    } as NodeJS.ProcessEnv)
+    await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+    const cfg = s.seen().body.generationConfig
+    // Thinking tokens are charged against this same budget, so it must be well
+    // clear of the turn itself or a thinking model truncates the JSON.
+    assert.ok(cfg.maxOutputTokens >= 4096, `budget was ${cfg.maxOutputTokens}`)
+    // Not sent unless configured: whether thinking can be disabled is
+    // model-dependent, and an unsupported value fails the whole request.
+    assert.equal(cfg.thinkingConfig, undefined)
+  } finally { s.close() }
+
+  const s2 = await mockGemini(okReply({ ok: true }))
+  try {
+    const provider = createGeminiProvider({
+      GEMINI_API_KEY: 'k', GEMINI_BASE_URL: s2.url,
+      GEMINI_MAX_OUTPUT_TOKENS: '8192', GEMINI_THINKING_BUDGET: '0',
+    } as NodeJS.ProcessEnv)
+    await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+    const cfg = s2.seen().body.generationConfig
+    assert.equal(cfg.maxOutputTokens, 8192)
+    assert.deepEqual(cfg.thinkingConfig, { thinkingBudget: 0 })
+  } finally { s2.close() }
+})
+
+test('a truncated turn names the budget as the cause', () => {
+  try {
+    extractGeminiJson({
+      candidates: [{ finishReason: 'MAX_TOKENS', content: { parts: [{ text: '{"partial"' }] } }],
+      usageMetadata: { thoughtsTokenCount: 1500 },
+    })
+    assert.fail('should have thrown')
+  } catch (e) {
+    assert.ok(e instanceof ProviderError)
+    assert.equal(e.kind, 'upstream')
+    assert.match(e.message, /GEMINI_MAX_OUTPUT_TOKENS/)
+    assert.match(e.message, /1500 of the budget went on thinking/)
+  }
+})

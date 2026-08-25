@@ -170,7 +170,15 @@ export function extractGeminiJson(payload: Record<string, unknown>): unknown {
   // A run cut short leaves valid-looking but partial JSON, so say so rather
   // than letting the validator report a mangled turn.
   if (finish && finish !== 'STOP' && finish !== 'FINISH_REASON_UNSPECIFIED') {
-    throw new ProviderError(`model stopped early (${finish})`, 'upstream')
+    const usage = payload.usageMetadata as { thoughtsTokenCount?: number } | undefined
+    const thoughts = usage?.thoughtsTokenCount
+    const hint =
+      finish === 'MAX_TOKENS'
+        ? ` — raise GEMINI_MAX_OUTPUT_TOKENS${
+            thoughts ? ` (${thoughts} of the budget went on thinking)` : ''
+          }`
+        : ''
+    throw new ProviderError(`model stopped early (${finish})${hint}`, 'upstream')
   }
 
   const content = candidate.content as { parts?: Array<{ text?: string }> } | undefined
@@ -226,7 +234,23 @@ async function attempt(
           responseSchema: GEMINI_TURN_SCHEMA,
           // Deliberately low: Lock should be consistent, not creative.
           temperature: 0.35,
-          maxOutputTokens: 1600,
+          /*
+           * Headroom, not appetite. Gemini 2.5 and later think by default, and
+           * `usageMetadata.thoughtsTokenCount` is charged against this same
+           * budget — so a cap sized to the turn alone can be swallowed by
+           * reasoning, truncating the JSON and failing every request. Unused
+           * budget costs nothing, so it is set well clear of the turn.
+           */
+          maxOutputTokens: Number(env.GEMINI_MAX_OUTPUT_TOKENS) || 4096,
+          /*
+           * Only sent when explicitly configured. Whether thinking can be
+           * turned off is model-dependent — some accept a budget of 0, others
+           * reject it outright — so Lock does not send a parameter that could
+           * make a working model start refusing requests.
+           */
+          ...(env.GEMINI_THINKING_BUDGET
+            ? { thinkingConfig: { thinkingBudget: Number(env.GEMINI_THINKING_BUDGET) } }
+            : {}),
         },
       }),
     })
