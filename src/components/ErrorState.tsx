@@ -14,6 +14,12 @@ interface Props {
  */
 export default function ErrorState({ error, onRetry, onLeave }: Props) {
   const unconfigured = error.code === 'unconfigured'
+  // Faults that a live probe can actually explain — offer it rather than
+  // making someone remember a URL while looking at an error.
+  const probeable = [
+    'unconfigured', 'auth', 'quota', 'rate_limited',
+    'model_unavailable', 'model_request_rejected', 'upstream',
+  ].includes(error.code)
 
   return (
     <div className="screen state-screen">
@@ -36,6 +42,14 @@ export default function ErrorState({ error, onRetry, onLeave }: Props) {
               content — only status codes and error classes — so it is safe to
               leave on: these faults only ever appear in a real deployment,
               which is exactly where they are hardest to diagnose blind. */}
+          {probeable && (
+            <p className="state-screen__probe">
+              <a href="/api/health?probe=1" target="_blank" rel="noreferrer">
+                Run the deployment diagnostic
+              </a>
+            </p>
+          )}
+
           {error.diagnostic && (
             <details className="diag">
               <summary className="diag__summary">Details</summary>

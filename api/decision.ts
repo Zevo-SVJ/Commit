@@ -51,6 +51,17 @@ function send(res: any, status: number, body: Json | unknown) {
 
 async function nodeStyle(req: any, res: any) {
   try {
+    // Opening this endpoint in a browser is a natural thing to try when a
+    // deployment misbehaves, so a GET hands over to the diagnostic rather
+    // than answering 405 and leaving you no wiser.
+    if (req.method === 'GET') {
+      const query = (req.url ?? '').includes('?') ? (req.url as string).slice((req.url as string).indexOf('?')) : ''
+      res.statusCode = 302
+      res.setHeader('location', `/api/health${query}`)
+      res.setHeader('cache-control', 'no-store')
+      res.end()
+      return
+    }
     if (req.method !== 'POST') {
       res.setHeader('allow', 'POST')
       return send(res, 405, errorBody('bad_request', 'Use POST.', false))
@@ -97,6 +108,13 @@ async function webStyle(request: Request): Promise<Response> {
     })
 
   try {
+    if (request.method === 'GET') {
+      const query = new URL(request.url).search
+      return new Response(null, {
+        status: 302,
+        headers: { location: `/api/health${query}`, 'cache-control': 'no-store' },
+      })
+    }
     if (request.method !== 'POST') {
       return new Response(JSON.stringify(errorBody('bad_request', 'Use POST.', false)), {
         status: 405,

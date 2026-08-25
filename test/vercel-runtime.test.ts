@@ -164,10 +164,12 @@ test('every failure path still answers JSON, never an HTML error page', async ()
     assert.equal(body.error.code, 'unconfigured')
     assert.equal(missing.status, 503)
 
-    // Wrong method.
-    const get = await fetch(`${host.url}/api/decision`)
-    assert.equal(get.status, 405)
-    assert.match(get.headers.get('content-type') ?? '', /json/)
+    // A genuinely wrong method still refuses in JSON. (GET is not one: it
+    // hands over to the diagnostic, covered separately.)
+    const put = await fetch(`${host.url}/api/decision`, { method: 'PUT' })
+    assert.equal(put.status, 405)
+    assert.match(put.headers.get('content-type') ?? '', /json/)
+    assert.equal(put.headers.get('allow'), 'POST')
 
     // Body that is not JSON at all.
     const junk = await fetch(`${host.url}/api/decision`, {
@@ -370,5 +372,87 @@ test('health without ?probe=1 makes no provider call at all', async () => {
   } finally {
     host.close(); p.close()
     delete process.env.OPENAI_BASE_URL
+  }
+})
+
+/* ---- reaching the diagnostic from a browser -------------------------- */
+
+test('a browser gets a readable page; anything else gets JSON', async () => {
+  const p = await fakeProvider({})
+  const bundled = await bundleFunction('api/health.ts')
+  process.env.OPENAI_API_KEY = 'sk-page-key-ffffffffffffffffffffff'
+  process.env.OPENAI_BASE_URL = p.url
+  const mod = await import(`file://${bundled}?page`)
+  const host = await hostNodeStyle(mod.default)
+  try {
+    const page = await fetch(`${host.url}/api/health?probe=1`, {
+      headers: { accept: 'text/html,application/xhtml+xml' },
+    })
+    assert.match(page.headers.get('content-type') ?? '', /text\/html/)
+    const html = await page.text()
+    assert.match(html, /<!doctype html>/i)
+    assert.match(html, /deployment diagnostic/i)
+    assert.ok(!html.includes('sk-page-key'), 'the key must never reach the page')
+
+    // Machines, and anyone who asks for it, still get JSON.
+    const json = await fetch(`${host.url}/api/health?probe=1`)
+    assert.match(json.headers.get('content-type') ?? '', /application\/json/)
+    assert.equal((await json.json()).probe.verdict, 'ok')
+
+    const forced = await fetch(`${host.url}/api/health?probe=1&format=json`, {
+      headers: { accept: 'text/html' },
+    })
+    assert.match(forced.headers.get('content-type') ?? '', /application\/json/)
+  } finally {
+    host.close(); p.close()
+    delete process.env.OPENAI_BASE_URL
+  }
+})
+
+test('the rendered page names the fault in words', async () => {
+  const p = await fakeProvider({
+    responses: (res) => {
+      res.writeHead(429, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        error: { type: 'insufficient_quota', code: 'insufficient_quota', message: 'no credit' },
+      }))
+    },
+  })
+  const bundled = await bundleFunction('api/health.ts')
+  process.env.OPENAI_API_KEY = 'sk-quota-key-gggggggggggggggggggg'
+  process.env.OPENAI_BASE_URL = p.url
+  const mod = await import(`file://${bundled}?quotapage`)
+  const host = await hostNodeStyle(mod.default)
+  try {
+    const html = await (
+      await fetch(`${host.url}/api/health?probe=1`, { headers: { accept: 'text/html' } })
+    ).text()
+    assert.match(html, /quota/i)
+    assert.match(html, /credit|billing/i, 'the page must say what to do about it')
+    assert.ok(!html.includes('sk-quota-key'))
+  } finally {
+    host.close(); p.close()
+    delete process.env.OPENAI_BASE_URL
+  }
+})
+
+test('opening /api/decision in a browser hands over to the diagnostic', async () => {
+  const bundled = await bundleFunction('api/decision.ts')
+  const mod = await import(`file://${bundled}?get`)
+  const host = await hostNodeStyle(mod.default)
+  try {
+    const res = await fetch(`${host.url}/api/decision?probe=1`, { redirect: 'manual' })
+    assert.equal(res.status, 302, 'a GET must not dead-end on 405')
+    assert.equal(res.headers.get('location'), '/api/health?probe=1')
+
+    // POST is unaffected.
+    const post = await fetch(`${host.url}/api/decision`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    })
+    assert.equal(post.status, 400)
+  } finally {
+    host.close()
   }
 })

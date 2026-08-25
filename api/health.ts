@@ -21,6 +21,8 @@ type Probe = {
   /** The provider's own error code, never its message verbatim. */
   providerCode: string | null
   advice: string | null
+  /** Where to go and fix it, when there is such a place. */
+  link: string | null
 }
 
 /** Free: proves whether the key is accepted at all, and whether the model exists. */
@@ -38,6 +40,7 @@ async function checkKey(key: string): Promise<Partial<Probe>> {
       return {
         keyAccepted: false, modelAvailable: null, verdict: 'auth', providerCode: code,
         advice: 'The key was rejected. Check it was pasted whole, then redeploy.',
+        link: 'https://platform.openai.com/api-keys',
       }
     }
     if (res.status === 404) {
@@ -77,7 +80,8 @@ async function checkQuota(key: string): Promise<Partial<Probe>> {
       return {
         canGenerate: false, verdict: 'quota', providerCode: code,
         advice:
-          'The key is valid but the account has no credit. Add a payment method and credit at platform.openai.com/settings/organization/billing. Project keys can also carry their own spend limit.',
+          'The key is valid but the account has no credit. Add a payment method and credit, then try again. A project key can also carry its own spend limit, separate from the organisation.',
+        link: 'https://platform.openai.com/settings/organization/billing/overview',
       }
     }
     if (res.status === 429) {
@@ -90,6 +94,76 @@ async function checkQuota(key: string): Promise<Partial<Probe>> {
   } catch {
     return { canGenerate: false, verdict: 'unreachable' }
   }
+}
+
+/** A readable page for a browser. No CSS file, no imports — one self-contained view. */
+function renderHtml(body: any): string {
+  const verdict: string | null = body.probe?.verdict ?? null
+  const good = verdict === 'ok'
+  const tone = verdict === null ? '#8E9196' : good ? '#7FD1AE' : '#E0C08A'
+
+  const row = (label: string, value: unknown) =>
+    `<div class="r"><span>${label}</span><b>${
+      value === null || value === undefined ? '—' : String(value)
+    }</b></div>`
+
+  const probeRows = body.probe
+    ? [
+        row('Key accepted', body.probe.keyAccepted),
+        row('Model available', body.probe.modelAvailable),
+        row('Can generate', body.probe.canGenerate),
+        row('Provider code', body.probe.providerCode),
+      ].join('')
+    : `<p class="hint">Add <code>?probe=1</code> to test the key against the provider.</p>`
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark"><title>Lock — diagnostic</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#08090b;color:#f1f2f4;
+ font:16px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+ letter-spacing:-.011em;padding:calc(env(safe-area-inset-top) + 32px) 22px
+ calc(env(safe-area-inset-bottom) + 40px)}
+main{max-width:520px;margin:0 auto}
+h1{font-size:13px;font-weight:600;letter-spacing:.02em;color:#676b71;margin:0 0 22px}
+.v{font-size:27px;font-weight:600;letter-spacing:-.03em;margin:0 0 8px;color:${tone}}
+.advice{color:#9ea2a8;margin:0 0 18px;font-size:15.5px;text-wrap:pretty;overflow-wrap:anywhere}
+.fix{margin:0 0 28px}
+.fix a{display:inline-block;color:#0a0b0d;background:#f1f2f4;text-decoration:none;
+ font-size:14.5px;font-weight:600;padding:11px 18px;border-radius:12px}
+.r{display:flex;justify-content:space-between;gap:16px;padding:12px 0;
+ border-top:1px solid rgba(255,255,255,.075);font-size:14.5px}
+.r span{color:#8e9196}
+.r b{font-weight:500;font-variant-numeric:tabular-nums;text-align:right;overflow-wrap:anywhere}
+h2{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+ color:#494d53;margin:30px 0 4px}
+.hint{color:#676b71;font-size:14px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#e0c08a}
+a{color:#9ea2a8}
+</style></head><body><main>
+<h1>Lock — deployment diagnostic</h1>
+<p class="v">${verdict ? verdict.replace(/_/g, ' ') : 'not probed'}</p>
+${body.probe?.advice ? `<p class="advice">${body.probe.advice}</p>` : ''}
+${body.probe?.link ? `<p class="fix"><a href="${body.probe.link}" target="_blank" rel="noreferrer">Open the page that fixes this</a></p>` : ''}
+<h2>Provider</h2>${probeRows}
+<h2>Key</h2>
+${row('Present', body.key.present)}
+${row('Length', body.key.length)}
+${row('Prefix', body.key.prefix)}
+${row('Well formed', body.key.looksWellFormed)}
+${row('Stray whitespace', body.key.hasWhitespace)}
+<h2>Deployment</h2>
+${row('Model', body.model)}
+${row('Environment', body.env)}
+${row('Commit', body.commit)}
+${row('Region', body.region)}
+${row('Node', body.node)}
+<h2></h2>
+<p class="hint">The key itself is never shown or returned.
+ <a href="?probe=1&amp;format=json">Raw JSON</a></p>
+</main></body></html>`
 }
 
 export default async function handler(req: any, b?: any) {
@@ -108,7 +182,7 @@ export default async function handler(req: any, b?: any) {
     const second = settled ? {} : await checkQuota(key)
     probe = {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
-      verdict: 'unknown', providerCode: null, advice: null,
+      verdict: 'unknown', providerCode: null, advice: null, link: null,
       ...first, ...second,
     }
   }
@@ -136,16 +210,25 @@ export default async function handler(req: any, b?: any) {
     time: new Date().toISOString(),
   }
 
-  const text = JSON.stringify(body, null, 2)
+  // A browser gets a page it can read; anything else gets JSON. `?format=json`
+  // forces JSON either way.
+  const accept: string =
+    (typeof req?.headers?.get === 'function' ? req.headers.get('accept') : req?.headers?.accept) ?? ''
+  const wantsHtml =
+    url.searchParams.get('format') !== 'json' && accept.includes('text/html')
+
+  const text = wantsHtml ? renderHtml(body) : JSON.stringify(body, null, 2)
+  const type = wantsHtml ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8'
+
   if (b && typeof b.setHeader === 'function') {
     b.statusCode = 200
-    b.setHeader('content-type', 'application/json; charset=utf-8')
+    b.setHeader('content-type', type)
     b.setHeader('cache-control', 'no-store')
     b.end(text)
     return
   }
   return new Response(text, {
     status: 200,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    headers: { 'content-type': type, 'cache-control': 'no-store' },
   })
 }

@@ -53,11 +53,17 @@ do.
 
 ## If a deployment is not working
 
-`/api/health` answers with no imports and no model call. Open it first:
+Open the diagnostic. On a deployment it is:
 
 ```
-https://<your-deployment>/api/health
+https://<your-deployment>/probe          ← runs the live probe
+https://<your-deployment>/health         ← no provider call, costs nothing
 ```
+
+Both are short forms of `/api/health`, which is the real path. Opening
+`/api/decision` in a browser hands over to the same page rather than answering
+405. In a browser you get a readable page; anything else gets JSON, and
+`?format=json` forces JSON either way.
 
 It reports whether a key reached the runtime, its length and prefix (never the
 key), whether it has stray whitespace, the model, the Node version, and the

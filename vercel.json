@@ -10,5 +10,15 @@
     "api/health.ts": {
       "maxDuration": 30
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/probe",
+      "destination": "/api/health?probe=1"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    }
+  ]
 }
