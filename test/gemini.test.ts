@@ -440,3 +440,83 @@ test('a truncated turn names the budget as the cause', () => {
     assert.match(e.message, /1500 of the budget went on thinking/)
   }
 })
+
+/* ---- credential transport --------------------------------------------- */
+
+test('an AQ. auth key travels as a bearer token, an AIza key as an API key', async () => {
+  const { authModeFor, authHeaders } = await import('../server/ai/gemini.js')
+
+  // Google validates the two down different paths — sending a bogus one of
+  // each to the live API returns INVALID_ARGUMENT vs UNAUTHENTICATED — so the
+  // transport is chosen from the credential's own shape.
+  assert.equal(authModeFor('AQ.Ab8RN6abcdefghijklmnop'), 'bearer')
+  assert.equal(authModeFor('AIzaSyabcdefghijklmnopqrst'), 'api-key')
+
+  assert.deepEqual(authHeaders('AQ.tok', 'bearer'), { authorization: 'Bearer AQ.tok' })
+  assert.deepEqual(authHeaders('AIzaX', 'api-key'), { 'x-goog-api-key': 'AIzaX' })
+
+  // And it can be forced either way when Google changes its mind again.
+  assert.equal(authModeFor('AQ.tok', 'api-key'), 'api-key')
+  assert.equal(authModeFor('AIzaX', 'bearer'), 'bearer')
+})
+
+test('the request actually carries the right header for each key shape', async () => {
+  for (const [key, header, absent] of [
+    ['AQ.Ab8RN6authkeyvaluezzzzzzzz', 'authorization', 'x-goog-api-key'],
+    ['AIzaSyStandardKeyValuezzzzzzz', 'x-goog-api-key', 'authorization'],
+  ] as const) {
+    const s = await mockGemini(okReply({ ok: true }))
+    try {
+      const provider = createGeminiProvider({
+        GEMINI_API_KEY: key, GEMINI_BASE_URL: s.url,
+      } as NodeJS.ProcessEnv)
+      await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+      const h = s.seen().headers
+      assert.ok(h[header], `${key.slice(0, 4)} must send ${header}`)
+      assert.equal(h[absent], undefined, `${key.slice(0, 4)} must not send ${absent}`)
+      // Never in the URL, whichever transport is used.
+      assert.ok(!s.seen().url.includes('AQ.') && !s.seen().url.includes('AIza'))
+    } finally { s.close() }
+  }
+})
+
+test('GEMINI_AUTH_MODE overrides the shape-based choice', async () => {
+  const s = await mockGemini(okReply({ ok: true }))
+  try {
+    const provider = createGeminiProvider({
+      GEMINI_API_KEY: 'AQ.authkeyvaluezzzzzzzzzz',
+      GEMINI_BASE_URL: s.url,
+      GEMINI_AUTH_MODE: 'api-key',
+    } as NodeJS.ProcessEnv)
+    await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+    assert.ok(s.seen().headers['x-goog-api-key'])
+    assert.equal(s.seen().headers['authorization'], undefined)
+  } finally { s.close() }
+})
+
+test('a NOT_FOUND from generate reaches the user with Google’s own words', async () => {
+  const s = await mockGemini((res) => {
+    res.writeHead(404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({
+      error: {
+        code: 404, status: 'NOT_FOUND',
+        message: 'models/gemini-2.5-flash is not found for API version v1beta, or is not supported for generateContent.',
+      },
+    }))
+  })
+  try {
+    const provider = createGeminiProvider({
+      GEMINI_API_KEY: 'AQ.tokenzzzzzzzzzzzzzzzzzz', GEMINI_BASE_URL: s.url,
+    } as NodeJS.ProcessEnv)
+    const res = await handleTurn(
+      { journey: null, event: { type: 'start', input: 'x' } },
+      provider,
+    )
+    const body = res.body as any
+    assert.equal(body.error.code, 'model_unavailable')
+    // The category alone was not enough to debug this; the message is.
+    assert.match(body.error.detail, /NOT_FOUND/)
+    assert.match(body.error.detail, /not supported for generateContent/)
+    assert.ok(!body.error.detail.includes('AQ.tokenzzz'), 'still no credential in the detail')
+  } finally { s.close() }
+})

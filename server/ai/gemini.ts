@@ -16,6 +16,31 @@ import { ProviderError, withRetry, type Provider, type ProviderRequest } from '.
 const DEFAULT_MODEL = 'gemini-2.5-flash'
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
 
+/**
+ * Google issues two kinds of credential, and validates them down different
+ * paths. Sending a bogus one of each to the live API shows it plainly:
+ *
+ *   x-goog-api-key: AIza…  ->  400 INVALID_ARGUMENT  "API key not valid"
+ *   x-goog-api-key: AQ.…   ->  401 UNAUTHENTICATED   "Expected OAuth 2 access token"
+ *
+ * The newer `AQ.` auth keys are bearer tokens; the older `AIza` standard keys
+ * are API keys. Sending a token in the API-key header is not what it is for,
+ * so the transport is chosen from the credential's own shape.
+ */
+export type GeminiAuthMode = 'bearer' | 'api-key'
+
+export function authModeFor(key: string, override?: string): GeminiAuthMode {
+  const forced = (override ?? '').trim().toLowerCase()
+  if (forced === 'bearer' || forced === 'api-key') return forced
+  return key.startsWith('AQ.') ? 'bearer' : 'api-key'
+}
+
+export function authHeaders(key: string, mode: GeminiAuthMode): Record<string, string> {
+  return mode === 'bearer'
+    ? { authorization: `Bearer ${key}` }
+    : { 'x-goog-api-key': key }
+}
+
 /* ------------------------------------------------------------------ */
 /* Schema translation                                                  */
 /* ------------------------------------------------------------------ */
@@ -222,9 +247,9 @@ async function attempt(
       signal,
       headers: {
         'content-type': 'application/json',
-        // The header form, not ?key= — a query parameter ends up in access
-        // logs, proxies and browser history.
-        'x-goog-api-key': key,
+        // Never ?key= — a query parameter ends up in access logs, proxies and
+        // browser history.
+        ...authHeaders(key, authModeFor(key, env.GEMINI_AUTH_MODE)),
       },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },

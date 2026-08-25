@@ -30,6 +30,25 @@ const MODEL = IS_GEMINI
   ? process.env.GEMINI_MODEL || 'gemini-2.5-flash'
   : process.env.LOCK_MODEL || 'gpt-4.1'
 
+/* Duplicated from gemini.ts on purpose: this file imports nothing, so that if
+   it answers and /api/decision does not, the fault is the decision function's
+   module graph and nothing else. Google validates `AQ.` auth keys as bearer
+   tokens and `AIza` standard keys as API keys. */
+function geminiAuth(key: string): Record<string, string> {
+  const forced = (process.env.GEMINI_AUTH_MODE ?? '').trim().toLowerCase()
+  const bearer = forced === 'bearer' || (forced !== 'api-key' && key.startsWith('AQ.'))
+  return bearer ? { authorization: `Bearer ${key}` } : { 'x-goog-api-key': key }
+}
+
+/** Nothing key-shaped may travel back in a message. */
+function scrub(text: string): string {
+  return text
+    .replace(/AQ\.[A-Za-z0-9_.\-]{8,}/g, 'AQ.***')
+    .replace(/AIza[A-Za-z0-9_\-]{8,}/g, 'AIza***')
+    .replace(/sk-[A-Za-z0-9_\-]{8,}/g, 'sk-***')
+    .slice(0, 300)
+}
+
 type Probe = {
   keyAccepted: boolean | null
   modelAvailable: boolean | null
@@ -43,6 +62,15 @@ type Probe = {
   link: string | null
   /** Models this key can actually use, when the provider will say. */
   models?: string[]
+  /** The provider's own words on the failing call, scrubbed. */
+  upstream?: { status: number; code: string | null; message: string; url: string } | null
+  /** Which credential transport was used. */
+  authMode?: string
+  /**
+   * Every combination of transport and API version, with what each returned.
+   * One run of this settles which the credential actually works with.
+   */
+  matrix?: Array<{ auth: string; version: string; status: number; code: string | null; message: string }>
 }
 
 /** Free: proves whether the key is accepted at all, and whether the model exists. */
@@ -122,36 +150,105 @@ async function checkGeminiKey(key: string): Promise<Partial<Probe>> {
 
 /** One tiny generation: the only way to tell a spent quota from a working key. */
 async function checkGeminiQuota(key: string): Promise<Partial<Probe>> {
+  const url = `${GEMINI}/models/${encodeURIComponent(MODEL)}:generateContent`
+  const authMode = 'authorization' in geminiAuth(key) ? 'bearer' : 'api-key'
   try {
-    const res = await fetch(`${GEMINI}/models/${encodeURIComponent(MODEL)}:generateContent`, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      headers: { ...geminiAuth(key), 'content-type': 'application/json' },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
         generationConfig: { maxOutputTokens: 8 },
       }),
       signal: AbortSignal.timeout(15000),
     })
-    if (res.ok) return { canGenerate: true, verdict: 'ok', advice: null }
+    if (res.ok) return { canGenerate: true, verdict: 'ok', advice: null, authMode, upstream: null }
 
     const body = (await res.json().catch(() => ({}))) as {
       error?: { status?: string; message?: string }
     }
     const code = body.error?.status ?? null
     const message = body.error?.message ?? ''
+    const upstream = {
+      status: res.status, code, message: scrub(message),
+      url: url.replace(/^https?:\/\/[^/]+/, ''),
+    }
+
+    if (res.status === 404 || code === 'NOT_FOUND') {
+      return {
+        canGenerate: false, verdict: 'model_unavailable', providerCode: code, authMode, upstream,
+        advice: `Google authenticated the request and then could not resolve "${MODEL}" for generateContent. The matrix below shows which transport and API version this credential does work with.`,
+      }
+    }
+    if (res.status === 401 || code === 'UNAUTHENTICATED') {
+      return {
+        canGenerate: false, verdict: 'auth', providerCode: code, authMode, upstream,
+        advice: 'The credential was refused for generation. If it starts with AQ. it is an auth key and must travel as a bearer token; set GEMINI_AUTH_MODE=bearer to force that.',
+      }
+    }
     if (res.status === 429) {
       const daily = /per day|daily|quota metric/i.test(message)
       return {
         canGenerate: false, verdict: daily ? 'quota' : 'rate_limited', providerCode: code,
+        authMode, upstream,
         advice: daily
           ? 'The free tier\u2019s daily request allowance is spent. It resets on Google\u2019s schedule; no payment is required.'
           : 'A per-minute limit. This one clears on its own within a minute.',
       }
     }
-    return { canGenerate: false, verdict: 'upstream', providerCode: code }
+    return { canGenerate: false, verdict: 'upstream', providerCode: code, authMode, upstream }
   } catch {
-    return { canGenerate: false, verdict: 'unreachable' }
+    return { canGenerate: false, verdict: 'unreachable', authMode }
   }
+}
+
+/**
+ * Tries every transport against every API version and reports what each said.
+ * Cheap, bounded, and it turns "which combination does this credential want"
+ * from a guess into one line of output.
+ */
+async function geminiMatrix(key: string): Promise<Probe['matrix']> {
+  const host = GEMINI.replace(/\/v1beta$|\/v1$/, '')
+  const combos: Array<{ auth: string; headers: Record<string, string> }> = [
+    { auth: 'bearer', headers: { authorization: `Bearer ${key}` } },
+    { auth: 'api-key', headers: { 'x-goog-api-key': key } },
+  ]
+  const versions = ['v1beta', 'v1']
+  const out: NonNullable<Probe['matrix']> = []
+
+  for (const { auth, headers } of combos) {
+    for (const version of versions) {
+      try {
+        const res = await fetch(
+          `${host}/${version}/models/${encodeURIComponent(MODEL)}:generateContent`,
+          {
+            method: 'POST',
+            headers: { ...headers, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+              generationConfig: { maxOutputTokens: 8 },
+            }),
+            signal: AbortSignal.timeout(12000),
+          },
+        )
+        if (res.ok) {
+          out.push({ auth, version, status: res.status, code: 'OK', message: '' })
+          continue
+        }
+        const b = (await res.json().catch(() => ({}))) as {
+          error?: { status?: string; message?: string }
+        }
+        out.push({
+          auth, version, status: res.status,
+          code: b.error?.status ?? null,
+          message: scrub(b.error?.message ?? ''),
+        })
+      } catch {
+        out.push({ auth, version, status: 0, code: 'unreachable', message: '' })
+      }
+    }
+  }
+  return out
 }
 
 /** Costs a few tokens: the only way to tell an empty account from a working one. */
@@ -248,6 +345,24 @@ ${body.probe?.advice ? `<p class="advice">${body.probe.advice}</p>` : ''}
 ${body.probe?.link ? `<p class="fix"><a href="${body.probe.link}" target="_blank" rel="noreferrer">Open the page that fixes this</a></p>` : ''}
 <h2>Provider</h2>${probeRows}
 ${
+  body.probe?.upstream
+    ? `<h2>What Google said</h2>${row('HTTP', body.probe.upstream.status)}${row(
+        'Code', body.probe.upstream.code,
+      )}${row('Path', body.probe.upstream.url)}<p class="hint">${
+        body.probe.upstream.message || '(no message)'
+      }</p>`
+    : ''
+}
+${
+  body.probe?.matrix?.length
+    ? `<h2>Transport × API version</h2>${body.probe.matrix
+        .map((m: any) =>
+          row(`${m.auth} · ${m.version}`, `${m.status} ${m.code ?? ''}`.trim()),
+        )
+        .join('')}`
+    : ''
+}
+${
   body.probe?.models?.length
     ? `<h2>Models this key can use</h2><p class="hint">${body.probe.models.join(', ')}</p>`
     : ''
@@ -260,6 +375,7 @@ ${row('Well formed', body.key.looksWellFormed)}
 ${row('Stray whitespace', body.key.hasWhitespace)}
 <h2>Deployment</h2>
 ${row('Provider', body.provider)}
+${body.probe?.authMode ? row('Auth transport', body.probe.authMode) : ''}
 ${row('Model', body.model)}
 ${row('Environment', body.env)}
 ${row('Commit', body.commit)}
@@ -285,10 +401,13 @@ export default async function handler(req: any, b?: any) {
     // Otherwise a passing credit check would overwrite the real verdict.
     const settled = first.keyAccepted === false || first.modelAvailable === false
     const second = settled ? {} : IS_GEMINI ? await checkGeminiQuota(key) : await checkQuota(key)
+    // Only when Gemini generation actually failed — it costs four calls.
+    const matrix =
+      IS_GEMINI && second.canGenerate === false ? { matrix: await geminiMatrix(key) } : {}
     probe = {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
       verdict: 'unknown', providerCode: null, advice: null, link: null,
-      ...first, ...second,
+      ...first, ...second, ...matrix,
     }
   }
 

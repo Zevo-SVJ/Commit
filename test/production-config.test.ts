@@ -236,3 +236,114 @@ test('a bad Gemini key reads as auth, and a spent quota as quota — never swapp
     }
   }
 })
+
+/** Stands in for Google, accepting one transport and one API version only. */
+function pickyGoogle(accept: { auth: 'bearer' | 'api-key'; version: string }) {
+  return new Promise<{ url: string; close: () => void }>((resolve) => {
+    const s = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        const url = req.url ?? ''
+        const isBearer = Boolean(req.headers['authorization'])
+        const isKey = Boolean(req.headers['x-goog-api-key'])
+        const version = url.startsWith('/v1beta') ? 'v1beta' : url.startsWith('/v1') ? 'v1' : '?'
+
+        if (url.endsWith('/models')) {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({
+            models: [{ name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] }],
+          }))
+          return
+        }
+
+        const authOk = accept.auth === 'bearer' ? isBearer : isKey
+        if (!authOk) {
+          res.writeHead(401, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({
+            error: { code: 401, status: 'UNAUTHENTICATED', message: 'Expected OAuth 2 access token' },
+          }))
+          return
+        }
+        if (version !== accept.version) {
+          res.writeHead(404, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({
+            error: {
+              code: 404, status: 'NOT_FOUND',
+              message: `models/gemini-2.5-flash is not found for API version ${version}`,
+            },
+          }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({
+          candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{}' }] } }],
+        }))
+      })
+    })
+    s.listen(0, () => resolve({ url: `http://127.0.0.1:${(s.address() as any).port}`, close: () => s.close() }))
+  })
+}
+
+test('the probe reports Google’s own words and which transport works', async () => {
+  // Google here accepts only bearer + v1beta. The probe is pointed at v1beta
+  // but its credential is AIza-shaped, so it will use the API-key header and
+  // fail — exactly the shape of the reported production fault.
+  const google = await pickyGoogle({ auth: 'bearer', version: 'v1beta' })
+  delete process.env.OPENAI_API_KEY
+  process.env.GEMINI_API_KEY = 'AIzaSyWRONGTRANSPORTzzzzzzzzzzzz'
+  process.env.GEMINI_BASE_URL = `${google.url}/v1beta`
+  delete process.env.GEMINI_AUTH_MODE
+
+  const fn = await bundled('api/health.ts', 'matrix-probe')
+  const h = await host(fn.default)
+  try {
+    const json = await (await fetch(`${h.url}/api/health?probe=1`)).json()
+
+    assert.equal(json.probe.keyAccepted, true, 'listing models still works')
+    assert.equal(json.probe.canGenerate, false)
+    assert.equal(json.probe.authMode, 'api-key')
+
+    // Google's own message, not just the category.
+    assert.equal(json.probe.upstream.status, 401)
+    assert.match(json.probe.upstream.message, /OAuth 2 access token/)
+    assert.match(json.probe.upstream.url, /generateContent/)
+
+    // And the matrix names the combination that does work.
+    const working = json.probe.matrix.filter((m: any) => m.code === 'OK')
+    assert.equal(working.length, 1, JSON.stringify(json.probe.matrix))
+    assert.equal(working[0].auth, 'bearer')
+    assert.equal(working[0].version, 'v1beta')
+
+    assert.ok(!JSON.stringify(json).includes('AIzaSyWRONGTRANSPORT'), 'no credential anywhere')
+  } finally {
+    h.close(); google.close()
+    delete process.env.GEMINI_BASE_URL
+  }
+})
+
+test('an AQ. credential reaches Google as a bearer token, end to end', async () => {
+  const google = await pickyGoogle({ auth: 'bearer', version: 'v1beta' })
+  delete process.env.OPENAI_API_KEY
+  delete process.env.GEMINI_AUTH_MODE
+  process.env.GEMINI_API_KEY = 'AQ.Ab8RN6PRODUCTIONSHAPEDAUTHKEY000000'
+  process.env.GEMINI_BASE_URL = `${google.url}/v1beta`
+
+  const fn = await bundled('api/decision.ts', 'aq-bearer')
+  const h = await host(fn.default)
+  try {
+    const res = await fetch(`${h.url}/api/decision`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ journey: null, event: { type: 'start', input: 'x' } }),
+    })
+    // Google accepted the bearer transport; the empty turn then fails
+    // validation, which is a different failure and proves auth got through.
+    const body = await res.json()
+    assert.notEqual(body?.error?.code, 'auth', 'the credential must be accepted')
+    assert.notEqual(body?.error?.code, 'model_unavailable')
+    assert.ok(!JSON.stringify(body).includes('AQ.Ab8RN6'), 'no credential in the response')
+  } finally {
+    h.close(); google.close()
+    delete process.env.GEMINI_BASE_URL
+  }
+})

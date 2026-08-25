@@ -302,10 +302,18 @@ export async function handleTurn(
 
       // A short, non-secret summary for the browser: enough to act on, never
       // enough to leak anything.
+      // Include the provider's own message, scrubbed. Without it a NOT_FOUND
+      // or an INVALID_ARGUMENT says which category the fault is in but not
+      // which thing was wrong, which is the part worth knowing.
       const detail = safeDetail(
-        [err.providerCode, err.status ? `HTTP ${err.status}` : null, err.requestId]
+        [
+          err.providerCode,
+          err.status ? `HTTP ${err.status}` : null,
+          err.requestId,
+          err.message,
+        ]
           .filter(Boolean)
-          .join(' · ') || err.message,
+          .join(' · '),
       )
 
       switch (err.kind) {
