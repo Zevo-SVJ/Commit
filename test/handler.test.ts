@@ -228,11 +228,14 @@ test('the brief carries conclusions, never a transcript', async () => {
       objective: 'obj', known: ['k1'], openQuestions: ['o1'],
       criticalUnknown: 'cu', contradiction: 'contra',
     },
+    exchanges: [{ question: 'How much of next year is committed?', answer: 'About half' }],
     decisions: [{
       id: 'd1', question: 'q', commitment: 'Pursue it.', rationale: 'r', context: null,
       source: 'lock', status: 'confirmed', importance: 'standard', isFinal: false,
       createdAt: 0, confirmedAt: 1,
     }],
+    currentDecisionId: null,
+    nextStep: '',
     progress: 0.5, confidence: 0.6, status: 'active', createdAt: 0, updatedAt: 0,
   }
   const brief = buildBrief(journey, { type: 'answer', text: 'newest answer' })
@@ -241,6 +244,84 @@ test('the brief carries conclusions, never a transcript', async () => {
   assert.ok(brief.includes('CONFIRMED'))
   // The turn's own text is delivered via the instruction, not the brief.
   assert.ok(!brief.includes('newest answer'))
+  // Already-asked questions travel verbatim so they cannot be asked twice.
+  assert.ok(brief.includes('How much of next year is committed?'))
+  assert.ok(brief.includes('About half'))
+  assert.ok(/ALREADY ASKED/.test(brief))
+})
+
+test('answers are recorded verbatim and bound the prompt', async () => {
+  let journey = body(
+    await handleTurn({ journey: null, event: { type: 'start', input: 'x' } }, scripted(ok())),
+  ).journey
+  // Far more turns than the cap, to prove the list cannot grow without limit.
+  for (let i = 0; i < 14; i++) {
+    journey = body(
+      await handleTurn(
+        { journey, event: { type: 'answer', text: `answer ${i}`, question: `question ${i}` } },
+        scripted(ok()),
+      ),
+    ).journey
+  }
+  assert.equal(journey.exchanges.length, 10)
+  // The oldest are dropped, the most recent kept.
+  assert.equal(journey.exchanges[0].answer, 'answer 4')
+  assert.equal(journey.exchanges.at(-1)?.answer, 'answer 13')
+})
+
+test('a contradiction is surfaced once, then not repeated', async () => {
+  const withContradiction = (c: string | null) =>
+    ok({ understanding: { ...ok().understanding, contradiction: c } })
+
+  const first = body(
+    await handleTurn(
+      { journey: null, event: { type: 'start', input: 'x' } },
+      scripted(withContradiction('The money is attractive but the exclusivity changes it.')),
+    ),
+  )
+  assert.equal(
+    first.step.kind === 'decision' && first.step.contradiction,
+    'The money is attractive but the exclusivity changes it.',
+    'a new contradiction must reach the user',
+  )
+
+  // Same contradiction next turn: already said, so it must not be shown again.
+  const second = body(
+    await handleTurn(
+      { journey: first.journey, event: { type: 'answer', text: 'ok' } },
+      scripted(withContradiction('The money is attractive but the exclusivity changes it.')),
+    ),
+  )
+  assert.equal(second.step.kind === 'decision' && second.step.contradiction, null)
+
+  // A genuinely different one is surfaced.
+  const third = body(
+    await handleTurn(
+      { journey: second.journey, event: { type: 'answer', text: 'ok' } },
+      scripted(withContradiction('You said speed matters, but you have waited three weeks.')),
+    ),
+  )
+  assert.equal(
+    third.step.kind === 'decision' && third.step.contradiction,
+    'You said speed matters, but you have waited three weeks.',
+  )
+})
+
+test('the journey is self-contained: current decision and next step', async () => {
+  const start = body(
+    await handleTurn({ journey: null, event: { type: 'start', input: 'x' } }, scripted(ok())),
+  )
+  assert.equal(start.journey.currentDecisionId, start.journey.decisions[0].id)
+  assert.match(start.journey.nextStep, /Awaiting confirmation/)
+
+  const done = body(
+    await handleTurn(
+      { journey: start.journey, event: { type: 'confirm', decisionId: start.journey.decisions[0].id } },
+      scripted(ok({ step: { ...ok().step, kind: 'complete', closing: 'Done.' } })),
+    ),
+  )
+  assert.equal(done.journey.currentDecisionId, null)
+  assert.match(done.journey.nextStep, /complete/i)
 })
 
 test('response payloads are unwrapped from either Responses API shape', () => {

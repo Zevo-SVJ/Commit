@@ -77,6 +77,25 @@ const SCRIPTS: Record<string, unknown[]> = {
     }, { title: 'Getting a cat' }),
     turn(1, { kind: 'complete', closing: 'You know what you are doing.' }, { title: 'Getting a cat' }),
   ],
+  contradiction: [
+    turn(
+      0.5,
+      {
+        kind: 'decision', question: 'Should I pursue the partnership?',
+        commitment: 'Pursue the partnership.', rationale: 'The risk is in the terms.',
+        isFinal: true, importance: 'pivotal', framing: 'Exclusivity is the live cost.',
+      },
+      {
+        understanding: {
+          objective: 'Decide whether the partnership is worth its terms',
+          known: ['Money is the stated motivation'], openQuestions: [],
+          criticalUnknown: 'What exclusivity blocks',
+          contradiction: 'You call this obvious, but you have left it three weeks.',
+        },
+      },
+    ),
+    turn(1, { kind: 'complete', closing: 'You know what you are doing.' }),
+  ],
   userDecision: [
     turn(0.5, {
       kind: 'decision', question: 'Should I pursue the partnership?',

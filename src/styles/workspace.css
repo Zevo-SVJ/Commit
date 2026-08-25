@@ -369,10 +369,17 @@
 
 /* ---- LOCK's one line of framing ---------------------------------- */
 
+.framings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0 0 22px;
+}
+
 .framing {
   display: flex;
   gap: 14px;
-  margin: 0 0 22px;
+  margin: 0;
   font-size: 16px;
   line-height: 1.46;
   letter-spacing: -0.014em;
@@ -385,6 +392,26 @@
   width: 2px;
   border-radius: 2px;
   background: var(--seal-dim);
+}
+
+/* LOCK pushing back reads brighter than LOCK framing — it is the one moment
+   the product disagrees, and it should not be mistaken for commentary. */
+.framing--tension {
+  color: var(--ink);
+}
+
+.framing--tension .framing__rule {
+  background: var(--seal);
+}
+
+.framing__label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--seal-dim);
+  margin-bottom: 6px;
 }
 
 /* ---- decisions decided, out of decisions raised -------------------- */

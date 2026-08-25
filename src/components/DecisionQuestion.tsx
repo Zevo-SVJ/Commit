@@ -44,7 +44,7 @@ export default function DecisionQuestion({ step, onAnswer }: Props) {
 
   return (
     <div className="card">
-      <DecisionContext framing={step.framing} />
+      <DecisionContext framing={step.framing} contradiction={step.contradiction} />
       <h2 className="t-display card__prompt">{step.prompt}</h2>
 
       <AnimatePresence mode="wait" initial={false}>

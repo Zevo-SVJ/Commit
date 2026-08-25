@@ -137,9 +137,12 @@ export function useJourney() {
   const answer = useCallback(
     (text: string) => {
       if (!state.journey) return
-      void run(state.journey, { type: 'answer', text })
+      // The question travels with the answer so the journey can record the
+      // pair verbatim, which is what stops it being asked again.
+      const question = state.step?.kind === 'question' ? state.step.prompt : undefined
+      void run(state.journey, { type: 'answer', text, question })
     },
-    [run, state.journey],
+    [run, state.journey, state.step],
   )
 
   const addDecision = useCallback(

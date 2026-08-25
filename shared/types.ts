@@ -44,13 +44,33 @@ export interface Understanding {
   contradiction: string | null
 }
 
+/** One question LOCK asked, and what the user actually said back. */
+export interface Exchange {
+  question: string
+  answer: string
+}
+
 export interface DecisionJourney {
   id: string
   /** Exactly what the user typed at the start. Never rewritten. */
   originalSituation: string
   title: string
   understanding: Understanding
+  /**
+   * Verbatim, uncompressed, and capped. `understanding.known` is LOCK's
+   * compressed read and can legitimately drop things; this is the guarantee
+   * that a question is never asked twice and that nothing the user said is
+   * silently lost when the model rewrites its own notes.
+   */
+  exchanges: Exchange[]
   decisions: Decision[]
+  /**
+   * The decision awaiting a slide, by id rather than by value so it cannot
+   * drift out of step with `decisions`.
+   */
+  currentDecisionId: string | null
+  /** What happens next, in a sentence. Internal; never rendered. */
+  nextStep: string
   /** 0..1. How resolved the journey is. May fall when new information lands. */
   progress: number
   /** 0..1. How sure LOCK is about its own read. */
@@ -69,6 +89,11 @@ export interface QuestionStep {
   id: string
   prompt: string
   /**
+   * A tension between what the user wants and what they have told us. Shown
+   * once, when it first appears — LOCK disagreeing, not nagging.
+   */
+  contradiction: string | null
+  /**
    * At most one sentence of new framing, shown above the question. Null unless
    * LOCK has something to add that the user did not already say.
    */
@@ -82,6 +107,7 @@ export interface DecisionStep {
   kind: 'decision'
   decision: Decision
   framing: string | null
+  contradiction: string | null
 }
 
 export interface CompleteStep {
@@ -98,7 +124,8 @@ export type Step = QuestionStep | DecisionStep | CompleteStep
 
 export type TurnEvent =
   | { type: 'start'; input: string }
-  | { type: 'answer'; text: string }
+  /** `question` is carried so the journey can record the pair verbatim. */
+  | { type: 'answer'; text: string; question?: string }
   | { type: 'confirm'; decisionId: string }
   | { type: 'addDecision'; text: string }
 

@@ -59,6 +59,12 @@ implication. If they say "I've already decided I want the partnership, I just
 don't know if the terms are worth it", the partnership is NOT a question. The
 terms are.
 
+The brief lists every question you have already asked and the exact answer you
+were given. Asking any of those again — even reworded, even narrowed — is a
+failure. Those answers are also the record of what the user actually said: your
+own notes are a compression of them and may have dropped a detail, so treat the
+verbatim answers as the truth if the two ever disagree.
+
 Most journeys need zero, one, or two questions. Interrogation is a failure
 mode. A person who arrives with enough context should reach a decision on the
 first turn.

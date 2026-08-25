@@ -9,13 +9,15 @@ import DecisionContext from './DecisionContext'
 export default function DecisionMoment({
   decision,
   framing,
+  contradiction,
 }: {
   decision: Decision
   framing: string | null
+  contradiction: string | null
 }) {
   return (
     <div className="card card--moment">
-      <DecisionContext framing={framing} />
+      <DecisionContext framing={framing} contradiction={contradiction} />
 
       <motion.div
         initial={{ opacity: 0, y: 14, filter: 'blur(8px)' }}

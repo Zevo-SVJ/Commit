@@ -80,6 +80,12 @@ than appended to, so the journey compresses as it goes instead of accumulating
 a transcript. A question is only allowed through validation if the model can
 name what a different answer would change.
 
+Compression has a failure mode — a rewritten note can drop something the user
+actually said — so `journey.exchanges` keeps every question asked and its exact
+answer, verbatim and capped. The brief lists them and forbids re-asking any of
+them, and tells the model to trust the verbatim answer over its own notes if
+the two disagree.
+
 ### What the server refuses to trust
 
 The model is constrained by a strict JSON schema, but structured output can
@@ -119,6 +125,12 @@ and the toolbar expanding and collapsing.
 WebKit is not installed in the environment this was built in, so iOS Safari
 itself has not been exercised. Chromium with `visualViewport` emulation is the
 closest available proxy.
+
+### Disagreeing
+
+`understanding.contradiction` is the one place LOCK pushes back. It is surfaced
+to the user on the turn it first appears and not repeated afterwards, and it is
+styled apart from ordinary framing so it does not read as commentary.
 
 ## Known gaps
 

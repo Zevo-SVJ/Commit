@@ -14,7 +14,7 @@ const EXAMPLES = [
   {
     label: 'Detailed',
     text:
-      'A studio has offered me €120,000 for a nine-month build, but they want exclusivity in their category for eighteen months — nine of them after delivery. Another client in the same category has been circling for weeks. About half of next year is already committed.',
+      'Should I pursue this partnership? They have offered me €120,000 for a nine-month build, but want exclusivity in their category for eighteen months — nine of them after delivery. Another client in the same category has been circling for weeks. About half of next year is already committed.',
   },
 ]
 

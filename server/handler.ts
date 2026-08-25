@@ -2,6 +2,7 @@ import type {
   ApiErrorCode,
   Decision,
   DecisionJourney,
+  Exchange,
   Step,
   TurnEvent,
   TurnRequest,
@@ -19,6 +20,8 @@ import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.ts'
 
 const TIMEOUT_MS = 30_000
 const MAX_INPUT = 4000
+/** Enough to stop a question repeating; bounded so the prompt cannot grow without limit. */
+const MAX_EXCHANGES = 10
 
 export interface HandlerResult {
   status: number
@@ -62,6 +65,16 @@ export function buildBrief(journey: DecisionJourney | null, event: TurnEvent): s
   if (u.openQuestions.length) lines.push(`- Still open: ${u.openQuestions.join('; ')}`)
   if (u.criticalUnknown) lines.push(`- Critical unknown: ${u.criticalUnknown}`)
   if (u.contradiction) lines.push(`- Tension you already raised: ${u.contradiction}`)
+
+  // Verbatim, so a question is never asked twice and nothing the user said is
+  // lost when the compressed notes above are rewritten.
+  if (journey.exchanges.length) {
+    lines.push('', 'Questions you have ALREADY ASKED, and their exact answers.')
+    lines.push('Never ask any of these again, in any wording:')
+    for (const e of journey.exchanges) {
+      lines.push(`- You asked: "${e.question}" -> They said: "${e.answer}"`)
+    }
+  }
 
   if (journey.decisions.length) {
     lines.push('', 'Decisions in this journey:')
@@ -110,6 +123,20 @@ function applyTurn(
       : d,
   )
 
+  // A contradiction is shown the first time it appears and not repeated after.
+  const previousContradiction = previous?.understanding.contradiction ?? null
+  const contradiction =
+    turn.understanding.contradiction && turn.understanding.contradiction !== previousContradiction
+      ? turn.understanding.contradiction
+      : null
+
+  const exchanges: Exchange[] =
+    event.type === 'answer' && event.question
+      ? [...(previous?.exchanges ?? []), { question: event.question, answer: event.text }].slice(
+          -MAX_EXCHANGES,
+        )
+      : (previous?.exchanges ?? [])
+
   let step: Step
 
   if (turn.step.kind === 'decision') {
@@ -129,7 +156,7 @@ function applyTurn(
     }
     // Only one decision is ever pending: a new one replaces any stale proposal.
     decisions = [...decisions.filter((d) => d.status === 'confirmed'), decision]
-    step = { kind: 'decision', decision, framing: s.framing }
+    step = { kind: 'decision', decision, framing: s.framing, contradiction }
   } else if (turn.step.kind === 'question') {
     const s = turn.step
     decisions = decisions.filter((d) => d.status === 'confirmed')
@@ -138,6 +165,7 @@ function applyTurn(
       id: uid('q'),
       prompt: s.prompt,
       framing: s.framing,
+      contradiction,
       options: s.options,
       allowFree: s.allowFree,
     }
@@ -148,12 +176,22 @@ function applyTurn(
 
   const complete = step.kind === 'complete'
 
+  const pending = decisions.find((d) => d.status === 'pending') ?? null
+
   const journey: DecisionJourney = {
     id: previous?.id ?? uid('jny'),
     originalSituation,
     title: turn.title || previous?.title || 'Untitled decision',
     understanding: turn.understanding,
+    exchanges,
     decisions,
+    currentDecisionId: pending?.id ?? null,
+    nextStep:
+      step.kind === 'decision'
+        ? `Awaiting confirmation of: ${step.decision.commitment}`
+        : step.kind === 'question'
+          ? `Awaiting an answer to: ${step.prompt}`
+          : 'Journey complete.',
     progress: complete ? 1 : turn.progress,
     confidence: turn.confidence,
     status: complete ? 'complete' : 'active',

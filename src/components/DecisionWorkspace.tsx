@@ -113,7 +113,11 @@ export default function DecisionWorkspace({
           ) : step?.kind === 'question' ? (
             <DecisionQuestion step={step} onAnswer={onAnswer} />
           ) : step?.kind === 'decision' ? (
-            <DecisionMoment decision={step.decision} framing={step.framing} />
+            <DecisionMoment
+              decision={step.decision}
+              framing={step.framing}
+              contradiction={step.contradiction}
+            />
           ) : null}
         </JourneyTransition>
       </div>

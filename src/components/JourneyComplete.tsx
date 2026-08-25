@@ -39,6 +39,19 @@ export default function JourneyComplete({
           {closing && <p className="t-quiet done__closing">{closing}</p>}
         </motion.div>
 
+        {/* A journey can close without a commitment — LOCK can conclude there
+            was nothing here to decide. That is a real outcome, not an empty
+            list. */}
+        {decisions.length === 0 ? (
+          <motion.p
+            className="t-quiet done__none"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.24, ease: [0.22, 1, 0.36, 1] }}
+          >
+            Nothing here needed committing to.
+          </motion.p>
+        ) : (
         <motion.ol className="done__list" variants={list} initial="hidden" animate="show">
           {decisions.map((d) => (
             <motion.li key={d.id} className="done__item" variants={item}>
@@ -53,6 +66,7 @@ export default function JourneyComplete({
             </motion.li>
           ))}
         </motion.ol>
+        )}
       </div>
 
       <div className="screen__dock">
