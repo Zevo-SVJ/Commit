@@ -5,7 +5,7 @@
   "framework": "vite",
   "functions": {
     "api/decision.ts": {
-      "maxDuration": 60
+      "maxDuration": 30
     }
   }
 }

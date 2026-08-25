@@ -18,7 +18,12 @@ import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.ts'
  * the deployment target is a detail.
  */
 
-const TIMEOUT_MS = 30_000
+/**
+ * Deliberately below the platform's function limit (30s in vercel.json) so the
+ * abort always fires first and the user gets a clean, retryable timeout rather
+ * than the host killing the request mid-flight. The client waits longer still.
+ */
+const TIMEOUT_MS = 25_000
 const MAX_INPUT = 4000
 /** Enough to stop a question repeating; bounded so the prompt cannot grow without limit. */
 const MAX_EXCHANGES = 10

@@ -361,3 +361,20 @@ test('the confirmation sequence is designed to run 1.2-1.8s', async () => {
     'reduced motion must stay readable',
   )
 })
+
+test('the timeout ladder leaves room for a clean error', async () => {
+  const fs = await import('node:fs')
+  const handler = fs.readFileSync('server/handler.ts', 'utf8')
+  const client = fs.readFileSync('src/lib/api.ts', 'utf8')
+  const vercel = JSON.parse(fs.readFileSync('vercel.json', 'utf8'))
+
+  const server = Number(/const TIMEOUT_MS = ([\d_]+)/.exec(handler)![1].replace(/_/g, ''))
+  const browser = Number(/const TIMEOUT_MS = ([\d_]+)/.exec(client)![1].replace(/_/g, ''))
+  const platform = vercel.functions['api/decision.ts'].maxDuration * 1000
+
+  // The server must give up before the host kills it, or the user sees nothing.
+  assert.ok(server < platform, `server ${server}ms must abort before platform ${platform}ms`)
+  // The client must outlast the server, or it reports a timeout the server
+  // was about to explain properly.
+  assert.ok(browser > server, `client ${browser}ms must outlast server ${server}ms`)
+})

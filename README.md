@@ -38,8 +38,10 @@ The model call must stay server-side, so **static hosting will not work** —
 this is why the old GitHub Pages deploy is gone. Any host that runs Node will
 do.
 
-- **Vercel** — zero config. `vercel.json` is already here, `api/decision.ts` is
-  the function. Set `OPENAI_API_KEY` in the project's environment variables.
+- **Vercel** — zero config. Import this repo at
+  [vercel.com/new](https://vercel.com/new/import?s=https%3A%2F%2Fgithub.com%2FZevo-SVJ%2FCommit),
+  set `OPENAI_API_KEY` when prompted, deploy. `vercel.json` and
+  `api/decision.ts` are already in place, and every later push redeploys.
 - **Anything else** — `npm run build && npm start` serves the client and the
   API together on `PORT` (default 3000).
 
