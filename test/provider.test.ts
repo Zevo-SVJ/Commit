@@ -66,9 +66,11 @@ test('sends a correctly shaped structured-output request', async () => {
 })
 
 test('classifies upstream failures without leaking the key', async () => {
+  // 401/403 are now 'auth' — a key that was sent and rejected is a different
+  // problem from no key at all, and the two need different advice.
   const cases: Array<[number, string]> = [
-    [401, 'unconfigured'],
-    [403, 'unconfigured'],
+    [401, 'auth'],
+    [403, 'auth'],
     [429, 'rate_limited'],
     [500, 'upstream'],
   ]

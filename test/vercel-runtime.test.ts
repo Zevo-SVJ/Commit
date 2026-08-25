@@ -250,3 +250,125 @@ test('the OpenAI request carries no unsupported strict-schema keywords', async (
   }
   walk(TURN_JSON_SCHEMA, 'schema')
 })
+
+/* ---- the health probe ------------------------------------------------ */
+
+/** Stands in for the provider, answering however the case needs. */
+function fakeProvider(handlers: {
+  model?: (res: any) => void
+  responses?: (res: any) => void
+}): Promise<{ url: string; close: () => void }> {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      req.resume()
+      req.on('end', () => {
+        if (req.url?.startsWith('/models/')) {
+          if (handlers.model) return handlers.model(res)
+          res.writeHead(200, { 'content-type': 'application/json' }).end('{"id":"gpt-4.1"}')
+          return
+        }
+        if (handlers.responses) return handlers.responses(res)
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{"output_text":"{}"}')
+      })
+    })
+    server.listen(0, () => {
+      const port = (server.address() as any).port
+      resolve({ url: `http://127.0.0.1:${port}`, close: () => server.close() })
+    })
+  })
+}
+
+const probeOnce = async (base: string, key: string, tag: string) => {
+  const bundled = await bundleFunction('api/health.ts')
+  process.env.OPENAI_API_KEY = key
+  process.env.OPENAI_BASE_URL = base
+  const mod = await import(`file://${bundled}?${tag}`)
+  const host = await hostNodeStyle(mod.default)
+  try {
+    const res = await fetch(`${host.url}/api/health?probe=1`)
+    return await res.json()
+  } finally {
+    host.close()
+    delete process.env.OPENAI_BASE_URL
+  }
+}
+
+test('the probe names an empty account as a billing problem', async () => {
+  const p = await fakeProvider({
+    responses: (res) => {
+      res.writeHead(429, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        error: { type: 'insufficient_quota', code: 'insufficient_quota',
+                 message: 'You exceeded your current quota' },
+      }))
+    },
+  })
+  try {
+    const body = await probeOnce(p.url, 'sk-live-key-aaaaaaaaaaaaaaaaaaaaaa', 'quota')
+    assert.equal(body.probe.keyAccepted, true, 'the key itself is fine')
+    assert.equal(body.probe.canGenerate, false)
+    assert.equal(body.probe.verdict, 'quota')
+    assert.match(body.probe.advice, /credit|billing/i)
+    assert.ok(!JSON.stringify(body).includes('sk-live-key-aaa'))
+  } finally { p.close() }
+})
+
+test('the probe distinguishes a rejected key from an empty account', async () => {
+  const p = await fakeProvider({
+    model: (res) => {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { code: 'invalid_api_key', message: 'Incorrect API key' } }))
+    },
+  })
+  try {
+    const body = await probeOnce(p.url, 'sk-bad-key-bbbbbbbbbbbbbbbbbbbbbb', 'auth')
+    assert.equal(body.probe.keyAccepted, false)
+    assert.equal(body.probe.verdict, 'auth')
+    assert.equal(body.probe.canGenerate, null, 'no point testing credit on a rejected key')
+  } finally { p.close() }
+})
+
+test('the probe reports a healthy key as ok', async () => {
+  const p = await fakeProvider({})
+  try {
+    const body = await probeOnce(p.url, 'sk-good-key-cccccccccccccccccccccc', 'ok')
+    assert.equal(body.probe.verdict, 'ok')
+    assert.equal(body.probe.canGenerate, true)
+    assert.equal(body.probe.advice, null)
+  } finally { p.close() }
+})
+
+test('the probe flags a model this account cannot use', async () => {
+  const p = await fakeProvider({
+    model: (res) => {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { code: 'model_not_found', message: 'no such model' } }))
+    },
+  })
+  try {
+    const body = await probeOnce(p.url, 'sk-good-key-dddddddddddddddddddddd', 'model')
+    assert.equal(body.probe.verdict, 'model_unavailable')
+    assert.match(body.probe.advice, /LOCK_MODEL/)
+  } finally { p.close() }
+})
+
+test('health without ?probe=1 makes no provider call at all', async () => {
+  let called = false
+  const p = await fakeProvider({
+    model: (res) => { called = true; res.writeHead(200).end('{}') },
+    responses: (res) => { called = true; res.writeHead(200).end('{}') },
+  })
+  const bundled = await bundleFunction('api/health.ts')
+  process.env.OPENAI_API_KEY = 'sk-key-eeeeeeeeeeeeeeeeeeeeeeee'
+  process.env.OPENAI_BASE_URL = p.url
+  const mod = await import(`file://${bundled}?noprobe`)
+  const host = await hostNodeStyle(mod.default)
+  try {
+    const body = await (await fetch(`${host.url}/api/health`)).json()
+    assert.equal(body.probe, null)
+    assert.equal(called, false, 'the plain health check must cost nothing')
+  } finally {
+    host.close(); p.close()
+    delete process.env.OPENAI_BASE_URL
+  }
+})

@@ -143,7 +143,16 @@ export interface TurnResponse {
 export type ApiErrorCode =
   /** No key reached the server. */
   | 'unconfigured'
+  /** A key was sent and the provider rejected it. */
+  | 'auth'
+  /** HTTP 429 because the account has no credit. Waiting will not help. */
+  | 'quota'
+  /** HTTP 429 because of a real requests/tokens-per-minute limit. */
   | 'rate_limited'
+  /** The configured model is not available to this account. */
+  | 'model_unavailable'
+  /** The provider refused the request itself — a schema or parameter fault. */
+  | 'model_request_rejected'
   | 'timeout'
   | 'upstream'
   /** The model answered, but not with a usable turn. */

@@ -114,6 +114,8 @@ const SCRIPTS: Record<string, unknown[]> = {
 
 let mode = 'multi'
 let calls = 0
+/** Every /api/decision request, so the browser tests can prove there are no duplicates. */
+let apiHits = 0
 
 const scripted: Provider = async () => {
   if (mode === 'error503') throw new ProviderError('no key', 'unconfigured')
@@ -132,11 +134,19 @@ createServer(async (req, res) => {
   if (url.pathname === '/__mode') {
     mode = url.searchParams.get('mode') ?? 'multi'
     calls = Number(url.searchParams.get('calls') ?? 0)
+    apiHits = 0
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ mode, calls }))
     return
   }
 
+  if (url.pathname === '/__hits') {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ apiHits }))
+    return
+  }
+
   if (url.pathname === '/api/decision') {
+    apiHits++
+
     // Reproduces what a misconfigured deployment actually returns: HTML, not
     // JSON — the SPA fallback for a missing function, or a platform error page.
     if (mode === 'html404' || mode === 'html500') {

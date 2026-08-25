@@ -8,20 +8,112 @@ import { TURN_JSON_SCHEMA } from './schema.js'
  * the serverless bundle small and the failure modes visible.
  */
 
-export type ProviderErrorKind = 'unconfigured' | 'rate_limited' | 'timeout' | 'upstream'
+export type ProviderErrorKind =
+  /** No key configured at all. */
+  | 'unconfigured'
+  /** A key was sent and rejected. */
+  | 'auth'
+  /** The account has no credit. HTTP 429, but waiting will never help. */
+  | 'quota'
+  /** A genuine requests-per-minute or tokens-per-minute limit. */
+  | 'rate_limited'
+  /** The model name is unknown to this account. */
+  | 'model_unavailable'
+  /** The request itself was refused — a bad schema or parameter. */
+  | 'bad_request'
+  | 'timeout'
+  | 'upstream'
 
 export class ProviderError extends Error {
   // Plain fields rather than constructor parameter properties, so these files
   // run under Node's type-stripping without a build step.
   kind: ProviderErrorKind
   status: number | undefined
+  /** Seconds the provider asked us to wait, when it said. */
+  retryAfter: number | undefined
+  /** The provider's own request id, for looking a failure up with them. */
+  requestId: string | undefined
+  /** The provider's error type/code, e.g. "insufficient_quota". */
+  providerCode: string | undefined
 
-  constructor(message: string, kind: ProviderErrorKind, status?: number) {
+  constructor(
+    message: string,
+    kind: ProviderErrorKind,
+    extra: {
+      status?: number
+      retryAfter?: number
+      requestId?: string
+      providerCode?: string
+    } = {},
+  ) {
     super(message)
     this.name = 'ProviderError'
     this.kind = kind
-    this.status = status
+    this.status = extra.status
+    this.retryAfter = extra.retryAfter
+    this.requestId = extra.requestId
+    this.providerCode = extra.providerCode
   }
+}
+
+/**
+ * Reads the provider's own error envelope.
+ *
+ * This is the whole point of the exercise: HTTP 429 covers two completely
+ * different situations. `insufficient_quota` means the account has no credit
+ * and no amount of waiting fixes it; `rate_limit_exceeded` means slow down.
+ * Telling a user to "give it a moment" when their billing is empty sends them
+ * in the wrong direction indefinitely.
+ */
+export function classifyProviderError(
+  status: number,
+  body: string,
+  headers: { get(name: string): string | null },
+): ProviderError {
+  let type = ''
+  let code = ''
+  let message = ''
+  try {
+    const parsed = JSON.parse(body) as { error?: { type?: string; code?: string; message?: string } }
+    type = parsed.error?.type ?? ''
+    code = parsed.error?.code ?? ''
+    message = parsed.error?.message ?? ''
+  } catch {
+    message = body.slice(0, 300)
+  }
+
+  const providerCode = code || type || undefined
+  const requestId = headers.get('x-request-id') ?? undefined
+  const retryHeader = Number(headers.get('retry-after'))
+  const retryAfter = Number.isFinite(retryHeader) && retryHeader > 0 ? retryHeader : undefined
+  const extra = { status, retryAfter, requestId, providerCode }
+  const detail = `${status} ${providerCode ?? 'unknown'}: ${message}`.slice(0, 400)
+
+  const quota =
+    type === 'insufficient_quota' ||
+    code === 'insufficient_quota' ||
+    code === 'billing_hard_limit_reached' ||
+    /quota|billing|credit|payment/i.test(message)
+
+  if (status === 429) {
+    return quota
+      ? new ProviderError(`quota exhausted — ${detail}`, 'quota', extra)
+      : new ProviderError(`rate limited — ${detail}`, 'rate_limited', extra)
+  }
+
+  if (status === 401 || status === 403) {
+    return new ProviderError(`credentials rejected — ${detail}`, 'auth', extra)
+  }
+
+  if (status === 404 || code === 'model_not_found') {
+    return new ProviderError(`model unavailable — ${detail}`, 'model_unavailable', extra)
+  }
+
+  if (status === 400 || status === 422) {
+    return new ProviderError(`request refused — ${detail}`, 'bad_request', extra)
+  }
+
+  return new ProviderError(`model returned ${detail}`, 'upstream', extra)
 }
 
 export interface ProviderRequest {
@@ -36,74 +128,113 @@ export type Provider = (req: ProviderRequest, signal: AbortSignal) => Promise<un
 const DEFAULT_MODEL = 'gpt-4.1'
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1'
 
+/** Waits, unless the caller gives up first. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new ProviderError('aborted while waiting to retry', 'timeout'))
+      },
+      { once: true },
+    )
+  })
+}
+
+/**
+ * A genuine rate limit is worth waiting out once, briefly. Quota exhaustion,
+ * a rejected key and a refused request are all permanent — retrying those
+ * just burns the request budget and delays telling the user the truth.
+ */
+const RETRYABLE_WAIT_CEILING_MS = 4000
+
 export function createOpenAIProvider(env: NodeJS.ProcessEnv = process.env): Provider {
   return async (req, signal) => {
-    const key = env.OPENAI_API_KEY
-    if (!key) {
-      throw new ProviderError('OPENAI_API_KEY is not set', 'unconfigured')
-    }
-
-    let res: Response
     try {
-      const base = (env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '')
-      res = await fetch(`${base}/responses`, {
-        method: 'POST',
-        signal,
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${key}`,
-        },
-        body: JSON.stringify({
-          model: env.LOCK_MODEL || DEFAULT_MODEL,
-          instructions: SYSTEM_PROMPT,
-          input: [{ role: 'user', content: `${req.brief}\n\n${req.instruction}` }],
-          // Deliberately low: Lock should be consistent, not creative.
-          temperature: 0.35,
-          // The schema is large; too low a cap truncates the JSON mid-object
-          // and the turn is discarded as unparseable.
-          max_output_tokens: 1600,
-          text: {
-            format: {
-              type: 'json_schema',
-              name: 'lock_turn',
-              strict: true,
-              schema: TURN_JSON_SCHEMA,
-            },
-          },
-        }),
-      })
+      return await attempt(env, req, signal)
     } catch (err) {
-      if ((err as Error)?.name === 'AbortError') {
-        throw new ProviderError('model call timed out', 'timeout')
+      if (
+        err instanceof ProviderError &&
+        err.kind === 'rate_limited' &&
+        !signal.aborted
+      ) {
+        const waitMs = Math.round((err.retryAfter ?? 1) * 1000)
+        if (waitMs <= RETRYABLE_WAIT_CEILING_MS) {
+          console.warn(`[lock] rate limited; retrying once in ${waitMs}ms`)
+          await pause(waitMs, signal)
+          return attempt(env, req, signal)
+        }
+        console.warn(`[lock] rate limited; provider asked for ${err.retryAfter}s — not waiting`)
       }
-      throw new ProviderError('could not reach the model', 'upstream')
+      throw err
     }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      if (res.status === 429) throw new ProviderError('rate limited', 'rate_limited', 429)
-      if (res.status === 401 || res.status === 403) {
-        throw new ProviderError('model rejected the credentials', 'unconfigured', res.status)
-      }
-      // Body is logged server-side only; it never reaches the client. The
-      // provider's own message is the fastest way to spot a rejected schema
-      // or an unknown model name.
-      throw new ProviderError(
-        `model returned ${res.status}: ${body.slice(0, 500)}`,
-        'upstream',
-        res.status,
-      )
-    }
-
-    const payload = (await res.json()) as Record<string, unknown>
-
-    // A run cut short by the token cap yields valid-looking but partial JSON.
-    if (payload.status === 'incomplete') {
-      const reason = (payload.incomplete_details as { reason?: string } | undefined)?.reason
-      throw new ProviderError(`model stopped early (${reason ?? 'unknown'})`, 'upstream')
-    }
-    return extractJson(payload)
   }
+}
+
+async function attempt(
+  env: NodeJS.ProcessEnv,
+  req: ProviderRequest,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const key = env.OPENAI_API_KEY
+  if (!key) {
+    throw new ProviderError('OPENAI_API_KEY is not set', 'unconfigured')
+  }
+
+  let res: Response
+  try {
+    const base = (env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '')
+    res = await fetch(`${base}/responses`, {
+      method: 'POST',
+      signal,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: env.LOCK_MODEL || DEFAULT_MODEL,
+        instructions: SYSTEM_PROMPT,
+        input: [{ role: 'user', content: `${req.brief}\n\n${req.instruction}` }],
+        // Deliberately low: Lock should be consistent, not creative.
+        temperature: 0.35,
+        // The schema is large; too low a cap truncates the JSON mid-object
+        // and the turn is discarded as unparseable.
+        max_output_tokens: 1600,
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'lock_turn',
+            strict: true,
+            schema: TURN_JSON_SCHEMA,
+          },
+        },
+      }),
+    })
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') {
+      throw new ProviderError('model call timed out', 'timeout')
+    }
+    throw new ProviderError('could not reach the model', 'upstream')
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    // The provider's own envelope is the only thing that can tell a genuine
+    // rate limit apart from an empty account. Logged in full server-side;
+    // only a scrubbed summary ever reaches the browser.
+    throw classifyProviderError(res.status, body, res.headers)
+  }
+
+  const payload = (await res.json()) as Record<string, unknown>
+
+  // A run cut short by the token cap yields valid-looking but partial JSON.
+  if (payload.status === 'incomplete') {
+    const reason = (payload.incomplete_details as { reason?: string } | undefined)?.reason
+    throw new ProviderError(`model stopped early (${reason ?? 'unknown'})`, 'upstream')
+  }
+  return extractJson(payload)
 }
 
 /**

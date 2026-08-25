@@ -285,22 +285,66 @@ export async function handleTurn(
       )
     }
     if (err instanceof ProviderError) {
-      console.error('[lock] provider error:', err.message)
+      // Everything the provider told us, kept server-side. This is what the
+      // function logs should be read for.
+      console.error(
+        '[lock] provider error:',
+        JSON.stringify({
+          kind: err.kind,
+          status: err.status,
+          providerCode: err.providerCode,
+          retryAfter: err.retryAfter,
+          requestId: err.requestId,
+          message: err.message,
+        }),
+      )
+
+      // A short, non-secret summary for the browser: enough to act on, never
+      // enough to leak anything.
+      const detail = safeDetail(
+        [err.providerCode, err.status ? `HTTP ${err.status}` : null, err.requestId]
+          .filter(Boolean)
+          .join(' · ') || err.message,
+      )
+
       switch (err.kind) {
         case 'unconfigured':
-          return fail(
-            503, 'unconfigured', 'Lock is not connected to a model yet.', false,
-            safeDetail(err.message),
-          )
+          return fail(503, 'unconfigured', 'Lock is not connected to a model yet.', false, detail)
+
+        case 'auth':
+          return fail(401, 'auth', 'Lock’s model key was rejected.', false, detail)
+
+        case 'quota':
+          // HTTP 429 from the provider, but retrying is pointless: the account
+          // is out of credit. Saying "give it a moment" would be a lie.
+          return fail(402, 'quota', 'Lock’s model account is out of credit.', false, detail)
+
         case 'rate_limited':
           return fail(
-            429, 'rate_limited', 'Too many requests. Give it a moment.', true,
-            safeDetail(err.message),
+            429,
+            'rate_limited',
+            err.retryAfter
+              ? `Too many requests. Try again in ${Math.ceil(err.retryAfter)}s.`
+              : 'Too many requests. Give it a moment.',
+            true,
+            detail,
           )
+
+        case 'model_unavailable':
+          return fail(
+            502, 'model_unavailable', 'Lock’s model is unavailable on this account.', false, detail,
+          )
+
+        case 'bad_request':
+          return fail(
+            502, 'model_request_rejected', 'Lock could not phrase that request.', false, detail,
+          )
+
         case 'timeout':
-          return fail(504, 'timeout', 'That took too long.', true, safeDetail(err.message))
+          return fail(504, 'timeout', 'That took too long.', true, detail)
+
         default:
-          return fail(502, 'upstream', 'Something went wrong.', true, safeDetail(err.message))
+          return fail(502, 'upstream', 'Something went wrong.', true, detail)
       }
     }
     console.error('[lock] unexpected error:', err)

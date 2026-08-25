@@ -72,16 +72,29 @@ The error screen carries a Details line naming where the request broke: the
 status, whether a web page came back instead of JSON, and the failing stage. It
 contains no key and no journey content.
 
+Add `?probe=1` and it also asks the provider two questions — is this key
+accepted, and does this account have credit — reporting the answers as a
+verdict with advice. It costs a handful of tokens and never reports the key.
+
 | What you see | What it means |
 | --- | --- |
 | `not_found` · HTTP 404 | `/api/decision` is not deployed |
 | `unreachable` · HTTP 5xx + web page | the function crashed before answering |
 | `server_boot` | the function ran but could not load its own modules |
 | `unconfigured` | no key reached the runtime — redeploy after adding it |
-| `upstream` | the model rejected or failed the request; the reason is in the function logs |
+| `auth` | a key was sent and the provider rejected it |
+| `quota` | HTTP 429 because the account has no credit. **Waiting will not help** — add credit |
+| `rate_limited` | HTTP 429 from a real per-minute limit. This one does clear |
+| `model_unavailable` | the account cannot use `LOCK_MODEL` |
+| `model_request_rejected` | the provider refused the request itself |
+| `upstream` | the provider failed; the reason is in the function logs |
 | `invalid_response` | the model answered, but not with a usable turn |
 | `timeout` | no reply within 25s |
 | `offline` | the request never left the browser |
+
+A provider 429 is two different faults wearing one status code. `quota` means
+billing; `rate_limited` means slow down. Only the second is retried, once, and
+only when the provider asks for a wait of four seconds or less.
 
 Function logs: Vercel → your project → **Logs**, filter to `/api/decision`.
 Lines are prefixed `[lock]`.
