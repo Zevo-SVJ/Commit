@@ -365,17 +365,39 @@ test('the confirmation sequence is designed to run 1.2-1.8s', async () => {
 
 test('the timeout ladder leaves room for a clean error', async () => {
   const fs = await import('node:fs')
+  const vercel = JSON.parse(fs.readFileSync('vercel.json', 'utf8'))
+  const { PROVIDER_TIMEOUT_MS, CLIENT_TIMEOUT_MS, FUNCTION_MAX_DURATION_S, ladderIsSound } =
+    await import('../shared/timeouts.js')
+
+  // One policy, one file. The three values used to live in three places and
+  // drifted; every consumer now reads them from here.
   const handler = fs.readFileSync('server/handler.ts', 'utf8')
   const client = fs.readFileSync('src/lib/api.ts', 'utf8')
-  const vercel = JSON.parse(fs.readFileSync('vercel.json', 'utf8'))
+  assert.match(handler, /PROVIDER_TIMEOUT_MS/, 'the server reads the shared policy')
+  assert.match(client, /CLIENT_TIMEOUT_MS/, 'the client reads the shared policy')
+  assert.ok(
+    !/const TIMEOUT_MS = [\d_]+/.test(handler) && !/const TIMEOUT_MS = [\d_]+/.test(client),
+    'no timeout may be hardcoded outside shared/timeouts.ts',
+  )
 
-  const server = Number(/const TIMEOUT_MS = ([\d_]+)/.exec(handler)![1].replace(/_/g, ''))
-  const browser = Number(/const TIMEOUT_MS = ([\d_]+)/.exec(client)![1].replace(/_/g, ''))
   const platform = vercel.functions['api/decision.ts'].maxDuration * 1000
+  assert.equal(
+    vercel.functions['api/decision.ts'].maxDuration, FUNCTION_MAX_DURATION_S,
+    'vercel.json must match the declared platform limit',
+  )
+  assert.equal(vercel.functions['api/health.ts'].maxDuration, FUNCTION_MAX_DURATION_S)
 
   // The server must give up before the host kills it, or the user sees nothing.
-  assert.ok(server < platform, `server ${server}ms must abort before platform ${platform}ms`)
-  // The client must outlast the server, or it reports a timeout the server
-  // was about to explain properly.
-  assert.ok(browser > server, `client ${browser}ms must outlast server ${server}ms`)
+  assert.ok(
+    PROVIDER_TIMEOUT_MS < platform,
+    `server ${PROVIDER_TIMEOUT_MS}ms must abort before platform ${platform}ms`,
+  )
+  // The client must outlast the platform, or it reports a timeout of its own
+  // instead of whatever the server or the host actually said.
+  assert.ok(
+    CLIENT_TIMEOUT_MS > platform,
+    `client ${CLIENT_TIMEOUT_MS}ms must outlast platform ${platform}ms`,
+  )
+  assert.ok(ladderIsSound(), 'the ladder must hold')
+  assert.ok(!ladderIsSound(70_000, 60, 65_000), 'and it must be able to fail')
 })

@@ -116,13 +116,31 @@ let mode = 'multi'
 let calls = 0
 /** Every /api/decision request, so the browser tests can prove there are no duplicates. */
 let apiHits = 0
+/** Every request that actually reached the provider. The number that costs money. */
+let providerHits = 0
+/** How long `slow` mode takes, so a test can straddle a timeout deliberately. */
+let slowMs = 1200
+/** Provider calls that were cancelled before they finished. */
+let cancelled = 0
 
-const scripted: Provider = async () => {
+const scripted: Provider = async (_req, signal) => {
+  providerHits++
   if (mode === 'error503') throw new ProviderError('no key', 'unconfigured')
   if (mode === 'error429') throw new ProviderError('slow down', 'rate_limited')
   if (mode === 'invalid') return { step: { kind: 'nonsense' } }
-  if (mode === 'slow') await new Promise((r) => setTimeout(r, 1200))
-  const script = SCRIPTS[mode === 'slow' ? 'multi' : mode] ?? SCRIPTS.multi
+  if (mode === 'slow' || mode === 'stall') {
+    // Honours the signal, the way a real provider does — so a cancelled turn
+    // stops costing something the moment nobody is waiting for it.
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(resolve, mode === 'stall' ? 600_000 : slowMs)
+      signal.addEventListener('abort', () => {
+        clearTimeout(t)
+        cancelled++
+        reject(signal.reason ?? new DOMException('aborted', 'AbortError'))
+      }, { once: true })
+    })
+  }
+  const script = SCRIPTS[mode === 'slow' || mode === 'stall' ? 'multi' : mode] ?? SCRIPTS.multi
   const out = script[Math.min(calls, script.length - 1)]
   calls++
   return out
@@ -134,13 +152,18 @@ createServer(async (req, res) => {
   if (url.pathname === '/__mode') {
     mode = url.searchParams.get('mode') ?? 'multi'
     calls = Number(url.searchParams.get('calls') ?? 0)
+    slowMs = Number(url.searchParams.get('ms') ?? 1200)
     apiHits = 0
+    providerHits = 0
+    cancelled = 0
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ mode, calls }))
     return
   }
 
   if (url.pathname === '/__hits') {
-    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ apiHits }))
+    res
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ apiHits, providerHits, cancelled }))
     return
   }
 
@@ -163,7 +186,15 @@ createServer(async (req, res) => {
     const chunks: Buffer[] = []
     for await (const c of req) chunks.push(c as Buffer)
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null
-    const result = await handleTurn(body, scripted)
+    /* The same caller-cancellation wiring the Vercel adapter uses, so the
+       browser tests exercise the real thing rather than a simplification. */
+    const gone = new AbortController()
+    res.on('close', () => {
+      if (!res.writableEnded && !res.headersSent && res.destroyed) gone.abort()
+    })
+
+    const result = await handleTurn(body, scripted, undefined, gone.signal)
+    if (res.writableEnded) return
     res.writeHead(result.status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     res.end(JSON.stringify(result.body))
     return

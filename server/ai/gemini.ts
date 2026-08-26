@@ -1,6 +1,12 @@
 import { SYSTEM_PROMPT } from './prompt.js'
-import { TURN_JSON_SCHEMA } from './schema.js'
-import { ProviderError, withRetry, type Provider, type ProviderRequest } from './provider.js'
+import { InvalidModelOutput, TURN_JSON_SCHEMA } from './schema.js'
+import {
+  ProviderError,
+  providerFailure,
+  withRetry,
+  type Provider,
+  type ProviderRequest,
+} from './provider.js'
 
 /**
  * Google Gemini, over the Generative Language API.
@@ -240,9 +246,10 @@ async function attempt(
   const model = env.GEMINI_MODEL || DEFAULT_MODEL
   const base = (env.GEMINI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '')
 
-  let res: Response
+  /* One try around the whole exchange — see the note in openrouter.ts. */
+  let stage = 'connecting'
   try {
-    res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
+    const res = await fetch(`${base}/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       signal,
       headers: {
@@ -279,17 +286,22 @@ async function attempt(
         },
       }),
     })
-  } catch (err) {
-    if ((err as Error)?.name === 'AbortError') {
-      throw new ProviderError('model call timed out', 'timeout')
+
+    stage = 'reading the response'
+    const text = await res.text()
+    if (!res.ok) throw classifyGeminiError(res.status, text, res.headers)
+
+    let payload: Record<string, unknown>
+    try {
+      payload = JSON.parse(text) as Record<string, unknown>
+    } catch {
+      throw new ProviderError('provider returned a non-JSON response', 'upstream', {
+        status: res.status,
+      })
     }
-    throw new ProviderError('could not reach the model', 'upstream')
+    return extractGeminiJson(payload)
+  } catch (err) {
+    if (err instanceof InvalidModelOutput) throw err
+    throw providerFailure(err, signal, stage)
   }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw classifyGeminiError(res.status, body, res.headers)
-  }
-
-  return extractGeminiJson((await res.json()) as Record<string, unknown>)
 }

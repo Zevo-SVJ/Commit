@@ -54,6 +54,7 @@ Lock talks to **OpenRouter**. One variable is required.
 | `LOCK_SITE_URL` / `LOCK_SITE_NAME` | Optional OpenRouter attribution headers. |
 | `OPENROUTER_BASE_URL` | Optional. Gateway or regional endpoint. |
 | `LOCK_PROVIDER` | `openrouter` (default), or `openai` / `gemini` to opt into a legacy provider. |
+| `LOCK_CANCEL_ON_DISCONNECT` | Set to `0` to keep generating after the browser hangs up. On by default. |
 | `OPENAI_API_KEY` · `OPENAI_MODEL` | Only read when `LOCK_PROVIDER=openai`. |
 | `GEMINI_API_KEY` · `GEMINI_MODEL` | Only read when `LOCK_PROVIDER=gemini`. |
 
@@ -112,6 +113,37 @@ fault is in the decision function's module graph rather than in routing.
 Adding `OPENROUTER_API_KEY` to an existing project does nothing until you redeploy —
 `key.present: false` on a live `/api/health` is that, almost every time.
 
+### Timeouts
+
+The three timeouts are one policy and live in `shared/timeouts.ts`:
+
+```
+provider 45s  <  Vercel function 60s  <  browser 65s
+```
+
+The server gives up first so a slow model produces a clean, classified
+`timeout` instead of the platform tearing the function down and leaving the
+browser to guess from an HTML error page. The browser gives up last so
+whatever the server decided is what the user is told. `vercel.json` is checked
+against this file by the test suite.
+
+45s is sized for `openrouter/free`, which routes to free models that queue
+behind other free traffic; 25s sat inside the range where a normal response
+still arrives.
+
+### Cancellation
+
+Every abort carries a reason, so the layer that catches it can say who decided.
+A server deadline is a `timeout` (504, retryable). A browser that hung up is
+`cancelled` (499, never rendered) and the provider call is dropped rather than
+run to completion on an allowance nobody will collect. An abort with no
+attribution is still reported as a timeout — never as a generic failure.
+
+Nothing is retried automatically except a rate limit the provider asked us to
+wait under four seconds for, because that is the only failure where the model
+provably did not run. Everything else is offered to the user as a retry, so one
+tap is never two generations.
+
 The error screen carries a Details line naming where the request broke: the
 status, whether a web page came back instead of JSON, and the failing stage. It
 contains no key and no journey content.
@@ -138,7 +170,8 @@ the key could use instead. It never reports the key.
 | `model_request_rejected` | the provider refused the request itself |
 | `upstream` | the provider failed; the reason is in the function logs |
 | `invalid_response` | the model answered, but not with a usable turn |
-| `timeout` | no reply within 25s |
+| `timeout` | no reply within 45s, or the platform stopped the function |
+| `cancelled` | the browser hung up first. Never rendered — nobody is there to see it |
 | `offline` | the request never left the browser |
 
 A provider 429 is two different faults wearing one status code. `quota` means

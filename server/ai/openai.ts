@@ -1,6 +1,12 @@
 import { SYSTEM_PROMPT } from './prompt.js'
-import { TURN_JSON_SCHEMA } from './schema.js'
-import { ProviderError, withRetry, type Provider, type ProviderRequest } from './provider.js'
+import { InvalidModelOutput, TURN_JSON_SCHEMA } from './schema.js'
+import {
+  ProviderError,
+  providerFailure,
+  withRetry,
+  type Provider,
+  type ProviderRequest,
+} from './provider.js'
 
 /**
  * OpenAI, over the Responses API.
@@ -86,10 +92,11 @@ async function attempt(
     throw new ProviderError('OPENAI_API_KEY is not set', 'unconfigured')
   }
 
-  let res: Response
+  /* One try around the whole exchange — see the note in openrouter.ts. */
+  const base = (env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '')
+  let stage = 'connecting'
   try {
-    const base = (env.OPENAI_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '')
-    res = await fetch(`${base}/responses`, {
+    const res = await fetch(`${base}/responses`, {
       method: 'POST',
       signal,
       headers: {
@@ -115,29 +122,36 @@ async function attempt(
         },
       }),
     })
-  } catch (err) {
-    if ((err as Error)?.name === 'AbortError') {
-      throw new ProviderError('model call timed out', 'timeout')
+
+    stage = 'reading the response'
+    const text = await res.text()
+
+    if (!res.ok) {
+      // The provider's own envelope is the only thing that can tell a genuine
+      // rate limit apart from an empty account. Logged in full server-side;
+      // only a scrubbed summary ever reaches the browser.
+      throw classifyProviderError(res.status, text, res.headers)
     }
-    throw new ProviderError('could not reach the model', 'upstream')
-  }
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    // The provider's own envelope is the only thing that can tell a genuine
-    // rate limit apart from an empty account. Logged in full server-side;
-    // only a scrubbed summary ever reaches the browser.
-    throw classifyProviderError(res.status, body, res.headers)
-  }
+    let payload: Record<string, unknown>
+    try {
+      payload = JSON.parse(text) as Record<string, unknown>
+    } catch {
+      throw new ProviderError('provider returned a non-JSON response', 'upstream', {
+        status: res.status,
+      })
+    }
 
-  const payload = (await res.json()) as Record<string, unknown>
-
-  // A run cut short by the token cap yields valid-looking but partial JSON.
-  if (payload.status === 'incomplete') {
-    const reason = (payload.incomplete_details as { reason?: string } | undefined)?.reason
-    throw new ProviderError(`model stopped early (${reason ?? 'unknown'})`, 'upstream')
+    // A run cut short by the token cap yields valid-looking but partial JSON.
+    if (payload.status === 'incomplete') {
+      const reason = (payload.incomplete_details as { reason?: string } | undefined)?.reason
+      throw new InvalidModelOutput(`the model stopped early (${reason ?? 'unknown'})`)
+    }
+    return extractJson(payload)
+  } catch (err) {
+    if (err instanceof InvalidModelOutput) throw err
+    throw providerFailure(err, signal, stage)
   }
-  return extractJson(payload)
 }
 
 /**

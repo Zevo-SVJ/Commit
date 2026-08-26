@@ -8,3 +8,6 @@ dist-ssr
 
 .env
 .env.local
+
+# Screenshot output from the browser suites when SHOTS is unset.
+undefined/

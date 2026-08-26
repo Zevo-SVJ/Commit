@@ -1,6 +1,12 @@
 import { SYSTEM_PROMPT } from './prompt.js'
-import { TURN_JSON_SCHEMA } from './schema.js'
-import { ProviderError, withRetry, type Provider, type ProviderRequest } from './provider.js'
+import { InvalidModelOutput, TURN_JSON_SCHEMA } from './schema.js'
+import {
+  ProviderError,
+  providerFailure,
+  withRetry,
+  type Provider,
+  type ProviderRequest,
+} from './provider.js'
 
 /**
  * OpenRouter, over its OpenAI-compatible chat/completions endpoint.
@@ -138,9 +144,15 @@ async function attempt(
     throw new ProviderError('OPENROUTER_API_KEY is not configured', 'unconfigured')
   }
 
-  let res: Response
+  /* One try around the *whole* exchange, not just the fetch.
+     A slow model returns its headers early and then streams; an abort landing
+     during the body read used to escape as a bare DOMException, which is what
+     produced `HTTP 500 · upstream · AbortError` in production. Every await
+     below can be interrupted, so every await below is covered. */
+  const started = Date.now()
+  let stage = 'connecting'
   try {
-    res = await fetch(`${openRouterBaseUrl(env)}/chat/completions`, {
+    const res = await fetch(`${openRouterBaseUrl(env)}/chat/completions`, {
       method: 'POST',
       signal,
       headers: {
@@ -168,42 +180,52 @@ async function attempt(
         },
       }),
     })
-  } catch (err) {
-    if ((err as Error)?.name === 'AbortError') {
-      throw new ProviderError('model call timed out', 'timeout')
+
+    stage = 'reading the response'
+    const text = await res.text()
+
+    if (!res.ok) {
+      // The gateway's own envelope is the only thing that separates an empty
+      // balance from a throttle. Logged in full server-side; only a scrubbed
+      // summary ever reaches the browser.
+      throw classifyOpenRouterError(res.status, text, res.headers)
     }
-    throw new ProviderError('could not reach the model', 'upstream')
-  }
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    // The gateway's own envelope is the only thing that separates an empty
-    // balance from a throttle. Logged in full server-side; only a scrubbed
-    // summary ever reaches the browser.
-    throw classifyOpenRouterError(res.status, body, res.headers)
-  }
+    let payload: Record<string, unknown>
+    try {
+      payload = JSON.parse(text) as Record<string, unknown>
+    } catch {
+      throw new ProviderError('gateway returned a non-JSON response', 'upstream', {
+        status: res.status,
+      })
+    }
 
-  const text = await res.text()
-  let payload: Record<string, unknown>
-  try {
-    payload = JSON.parse(text) as Record<string, unknown>
-  } catch {
-    throw new ProviderError('gateway returned a non-JSON response', 'upstream', {
-      status: res.status,
-    })
-  }
+    // A gateway can answer 200 and put the upstream provider's failure in the
+    // body. Treated as the failure it is, with the same classification.
+    if (payload.error) {
+      throw classifyOpenRouterError(
+        Number((payload.error as { code?: unknown }).code) || 502,
+        text,
+        res.headers,
+      )
+    }
 
-  // A gateway can answer 200 and put the upstream provider's failure in the
-  // body. Treated as the failure it is, with the same classification.
-  if (payload.error) {
-    throw classifyOpenRouterError(
-      Number((payload.error as { code?: unknown }).code) || 502,
-      text,
-      res.headers,
+    console.log(
+      `[lock] openrouter ok in ${Date.now() - started}ms · model ${
+        typeof payload.model === 'string' ? payload.model : openRouterModel(env)
+      }`,
     )
+    return extractOpenRouterJson(payload)
+  } catch (err) {
+    // A content fault is about what the model said, not about the transport,
+    // so it keeps its own identity all the way to `invalid_response`.
+    if (err instanceof InvalidModelOutput) throw err
+    const failure = providerFailure(err, signal, stage)
+    if (failure !== err) {
+      console.error(`[lock] openrouter failed after ${Date.now() - started}ms while ${stage}`)
+    }
+    throw failure
   }
-
-  return extractOpenRouterJson(payload)
 }
 
 /**
@@ -217,13 +239,15 @@ async function attempt(
 export function extractOpenRouterJson(payload: Record<string, unknown>): unknown {
   const choices = payload.choices
   if (!Array.isArray(choices) || choices.length === 0) {
-    throw new ProviderError('model returned an empty response', 'upstream')
+    throw new InvalidModelOutput('the model returned no choices')
   }
 
   const choice = choices[0] as Record<string, unknown>
   const finish = choice.finish_reason ?? choice.native_finish_reason
   if (finish === 'length') {
-    throw new ProviderError('model stopped early (length)', 'upstream')
+    // Valid-looking JSON cut off mid-object. Reported as what it is rather
+    // than as an upstream fault, because the request did succeed.
+    throw new InvalidModelOutput('the model stopped early (hit the token cap)')
   }
   if (finish === 'content_filter') {
     throw new ProviderError('model refused the request (content_filter)', 'bad_request')
@@ -245,7 +269,7 @@ export function extractOpenRouterJson(payload: Record<string, unknown>): unknown
   // A rare gateway shape: the object already parsed.
   if (content && typeof content === 'object') return content
 
-  throw new ProviderError('model returned an empty response', 'upstream')
+  throw new InvalidModelOutput('the model returned an empty message')
 }
 
 /** JSON, a fenced block of JSON, or JSON with something said around it. */
@@ -276,6 +300,8 @@ function safeParse(text: string): unknown {
     }
   }
 
-  // A refusal or a truncated stream lands here.
-  throw new ProviderError('model returned unparseable output', 'upstream')
+  // A refusal, or prose with no JSON in it at all.
+  throw new InvalidModelOutput(
+    `the model did not return JSON (${trimmed.length} chars, starts "${trimmed.slice(0, 40)}")`,
+  )
 }

@@ -27,6 +27,36 @@ async function loadHandler() {
   return mod.handleTurn
 }
 
+/**
+ * A signal that fires if the caller goes away before we answer.
+ *
+ * `res.close` fires both on a normal finish and on a dropped connection, so
+ * `writableEnded` is what tells them apart. Without this the function keeps
+ * generating for a browser that has already navigated away — which on a free
+ * gateway spends an allowance nobody will ever see the result of.
+ *
+ * If a runtime never fires it, nothing is lost: the turn simply runs to
+ * completion the way it always did.
+ */
+function callerSignalFor(res: any): AbortSignal | undefined {
+  // A deliberate escape hatch. This is the one behaviour here that cannot be
+  // verified against the real platform from a test, and if a runtime ever
+  // emitted `close` early it would cancel healthy turns — so it can be turned
+  // off with an environment variable rather than a code change.
+  if ((process.env.LOCK_CANCEL_ON_DISCONNECT ?? '').trim() === '0') return undefined
+  if (!res || typeof res.on !== 'function') return undefined
+
+  const controller = new AbortController()
+  const gone = () => {
+    // `close` fires on a normal finish too. Three independent signs that this
+    // is not that: nothing was written, nothing was sent, and the socket is
+    // gone. A completed response fails all three.
+    if (!res.writableEnded && !res.headersSent && res.destroyed) controller.abort()
+  }
+  res.on('close', gone)
+  return controller.signal
+}
+
 /** Vercel may pre-parse the body, hand it over as text, or leave the stream. */
 async function readBody(req: any): Promise<unknown> {
   if (req.body !== undefined && req.body !== null && req.body !== '') {
@@ -86,7 +116,9 @@ async function nodeStyle(req: any, res: any) {
       )
     }
 
-    const result = await handleTurn(body)
+    const result = await handleTurn(body, undefined, undefined, callerSignalFor(res))
+    // The caller may already be gone; there is nothing to send it to.
+    if (res.writableEnded) return
     return send(res, result.status, result.body)
   } catch (err) {
     console.error('[lock] unhandled error in function:', err)
@@ -137,7 +169,9 @@ async function webStyle(request: Request): Promise<Response> {
       return json(errorBody('server_boot', 'Lock could not start.', true, describe(err)), 500)
     }
 
-    const result = await handleTurn(body)
+    // The Web signature carries the caller's own signal, so a disconnect is
+    // reported as a cancellation rather than mistaken for a slow model.
+    const result = await handleTurn(body, undefined, undefined, request.signal)
     return json(result.body, result.status)
   } catch (err) {
     console.error('[lock] unhandled error in function:', err)

@@ -154,6 +154,8 @@ export type ApiErrorCode =
   /** The provider refused the request itself — a schema or parameter fault. */
   | 'model_request_rejected'
   | 'timeout'
+  /** The caller went away before the answer was ready. Never rendered. */
+  | 'cancelled'
   | 'upstream'
   /** The model answered, but not with a usable turn. */
   | 'invalid_response'

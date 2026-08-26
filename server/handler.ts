@@ -10,7 +10,15 @@ import type {
 } from '../shared/types.js'
 import { turnInstruction } from './ai/prompt.js'
 import { createProvider } from './ai/factory.js'
-import { ProviderError, type Provider } from './ai/provider.js'
+import {
+  ClientGoneAbort,
+  ProviderError,
+  TimeoutAbort,
+  isAbortError,
+  isClientGoneAbort,
+  type Provider,
+} from './ai/provider.js'
+import { PROVIDER_TIMEOUT_MS } from '../shared/timeouts.js'
 import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.js'
 
 /**
@@ -20,11 +28,10 @@ import { InvalidModelOutput, parseTurn, type ModelTurn } from './ai/schema.js'
  */
 
 /**
- * Deliberately below the platform's function limit (30s in vercel.json) so the
- * abort always fires first and the user gets a clean, retryable timeout rather
- * than the host killing the request mid-flight. The client waits longer still.
+ * The server's share of the timeout ladder, which lives in one place now —
+ * see shared/timeouts.ts for why the three values are what they are.
  */
-const TIMEOUT_MS = 25_000
+const TIMEOUT_MS = PROVIDER_TIMEOUT_MS
 const MAX_INPUT = 4000
 /** Enough to stop a question repeating; bounded so the prompt cannot grow without limit. */
 const MAX_EXCHANGES = 10
@@ -253,6 +260,13 @@ export async function handleTurn(
   body: unknown,
   provider: Provider = createProvider(),
   now: number = Date.now(),
+  /**
+   * The incoming request's own signal, when the runtime gives us one. It is
+   * what lets a genuine client disconnect be told apart from a slow model —
+   * and it stops a generation nobody is waiting for from running to the end
+   * of the function's budget on a free-tier allowance.
+   */
+  callerSignal?: AbortSignal,
 ): Promise<HandlerResult> {
   const req = validRequest(body)
   if (!req) return fail(400, 'bad_request', 'That request could not be read.', false)
@@ -271,9 +285,19 @@ export async function handleTurn(
     return fail(400, 'bad_request', 'Say what you are deciding first.', false)
   }
 
+  /* Every abort carries a reason, so the layer that catches it can say who
+     decided. Without this an AbortError is anonymous, and an anonymous
+     AbortError is what escaped classification and became HTTP 500. */
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(new TimeoutAbort(TIMEOUT_MS)), TIMEOUT_MS)
 
+  const onCallerGone = () => controller.abort(new ClientGoneAbort())
+  if (callerSignal) {
+    if (callerSignal.aborted) onCallerGone()
+    else callerSignal.addEventListener('abort', onCallerGone, { once: true })
+  }
+
+  const started = Date.now()
   try {
     const raw = await provider(
       {
@@ -283,6 +307,7 @@ export async function handleTurn(
       controller.signal,
     )
     const turn = parseTurn(raw, req.journey?.progress ?? 0.1)
+    console.log(`[lock] turn ${req.event.type} completed in ${Date.now() - started}ms`)
     return { status: 200, body: applyTurn(req.journey, req.event, turn, now) }
   } catch (err) {
     if (err instanceof InvalidModelOutput) {
@@ -326,6 +351,12 @@ export async function handleTurn(
       )
 
       switch (err.kind) {
+        case 'cancelled':
+          // Nobody is listening. 499 is not a real HTTP status but it is the
+          // conventional one for this, and it keeps the log honest instead of
+          // recording a failure that never happened.
+          return fail(499, 'cancelled', 'That request was cancelled.', false, detail)
+
         case 'unconfigured':
           return fail(503, 'unconfigured', 'Lock is not connected to a model yet.', false, detail)
 
@@ -359,12 +390,31 @@ export async function handleTurn(
           )
 
         case 'timeout':
-          return fail(504, 'timeout', 'That took too long.', true, detail)
+          return fail(
+            504, 'timeout', 'That took too long.', true,
+            `${detail} · gave up after ${Date.now() - started}ms of ${TIMEOUT_MS}ms`,
+          )
 
         default:
           return fail(502, 'upstream', 'Something went wrong.', true, detail)
       }
     }
+    /* Belt and braces for the fault this pass exists to remove: an abort
+       reaching here means some layer let one through unclassified. It is
+       still a timeout or a cancellation, and it is reported as one — never
+       again as a generic 500. */
+    if (isAbortError(err) || controller.signal.aborted) {
+      const cancelled = isClientGoneAbort(controller.signal.reason)
+      console.error(
+        `[lock] ${cancelled ? 'caller went away' : 'aborted'} after ${Date.now() - started}ms ` +
+          `(unclassified — ${scrubKeys(err instanceof Error ? err.name : String(err))})`,
+      )
+      return cancelled
+        ? fail(499, 'cancelled', 'That request was cancelled.', false, 'the caller disconnected')
+        : fail(504, 'timeout', 'That took too long.', true,
+            `no reply within ${Math.round(TIMEOUT_MS / 1000)}s`)
+    }
+
     console.error(
       '[lock] unexpected error:',
       scrubKeys(err instanceof Error ? `${err.name}: ${err.stack ?? err.message}` : String(err)),
@@ -375,5 +425,6 @@ export async function handleTurn(
     )
   } finally {
     clearTimeout(timer)
+    callerSignal?.removeEventListener('abort', onCallerGone)
   }
 }

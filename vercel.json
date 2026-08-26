@@ -5,10 +5,10 @@
   "framework": "vite",
   "functions": {
     "api/decision.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     },
     "api/health.ts": {
-      "maxDuration": 30
+      "maxDuration": 60
     }
   },
   "rewrites": [

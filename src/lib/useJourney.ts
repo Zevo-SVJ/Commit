@@ -30,6 +30,22 @@ export interface JourneyState {
   turnPending: boolean
 }
 
+/**
+ * Identifies a user action, so the same one arriving twice can be recognised.
+ * Content matters, not identity: two taps of the same answer are one action.
+ */
+function actionKey(journey: DecisionJourney | null, event: TurnEvent): string {
+  const detail =
+    event.type === 'start'
+      ? event.input
+      : event.type === 'answer' || event.type === 'addDecision'
+        ? event.text
+        : event.type === 'confirm'
+          ? event.decisionId
+          : ''
+  return `${journey?.id ?? 'new'}:${event.type}:${detail}`
+}
+
 const INITIAL: JourneyState = {
   phase: 'home',
   journey: null,
@@ -44,14 +60,27 @@ export function useJourney() {
 
   /** The event to replay if the user retries. */
   const lastEvent = useRef<{ journey: DecisionJourney | null; event: TurnEvent } | null>(null)
-  const abort = useRef<AbortController | null>(null)
+  /**
+   * The turn currently on the wire, and what it is for.
+   *
+   * Keyed by the action rather than merely counted, so a second tap of the
+   * *same* thing is ignored while a genuinely different action still
+   * supersedes the one in flight.
+   */
+  const inFlight = useRef<{ key: string; controller: AbortController } | null>(null)
+  /**
+   * Which turn is allowed to write to the screen. Only the newest one is: a
+   * superseded turn that fails after a newer one started used to throw the
+   * user onto an error screen while the newer turn was still running.
+   */
+  const seq = useRef(0)
   const alive = useRef(true)
 
   useEffect(() => {
     alive.current = true
     return () => {
       alive.current = false
-      abort.current?.abort()
+      inFlight.current?.controller.abort()
     }
   }, [])
 
@@ -84,10 +113,15 @@ export function useJourney() {
       event: TurnEvent,
       opts: { silent?: boolean } = {},
     ) => {
+      const key = actionKey(journey, event)
+      // The same tap, twice. One user action is one provider request.
+      if (inFlight.current?.key === key) return
+
       lastEvent.current = { journey, event }
-      abort.current?.abort()
+      inFlight.current?.controller.abort()
       const controller = new AbortController()
-      abort.current = controller
+      inFlight.current = { key, controller }
+      const mine = ++seq.current
 
       // A confirmation keeps its own screen: the animation must not be
       // interrupted by a loading state behind it.
@@ -97,7 +131,7 @@ export function useJourney() {
 
       try {
         const turn = await takeTurn(journey, event, controller.signal)
-        if (!alive.current || controller.signal.aborted) return
+        if (!alive.current || mine !== seq.current) return
         setState((s) => ({
           ...s,
           // A confirmation still playing owns the screen until its animation
@@ -111,7 +145,10 @@ export function useJourney() {
           turnPending: false,
         }))
       } catch (err) {
-        if (!alive.current || (err as Error)?.name === 'AbortError') return
+        // A superseded turn never writes to the screen, whether it was
+        // cancelled cleanly or came back with a failure after the fact.
+        if (!alive.current || mine !== seq.current) return
+        if ((err as Error)?.name === 'AbortError') return
         const e: LockError =
           err instanceof LockRequestError
             ? {
@@ -125,6 +162,8 @@ export function useJourney() {
             : { code: 'upstream', message: 'Something went wrong.', retryable: true }
         // The journey is never destroyed by a failed turn.
         setState((s) => ({ ...s, phase: 'error', error: e, settling: false, turnPending: false }))
+      } finally {
+        if (inFlight.current?.controller === controller) inFlight.current = null
       }
     },
     [],
@@ -198,7 +237,9 @@ export function useJourney() {
   }, [run])
 
   const reset = useCallback(() => {
-    abort.current?.abort()
+    seq.current++
+    inFlight.current?.controller.abort()
+    inFlight.current = null
     save(null)
     setState(INITIAL)
   }, [])

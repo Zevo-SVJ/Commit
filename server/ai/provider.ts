@@ -10,6 +10,8 @@
  */
 
 export type ProviderErrorKind =
+  /** The caller went away. Nobody is waiting for this answer. */
+  | 'cancelled'
   /** No key configured at all. */
   | 'unconfigured'
   /** A key was sent and rejected. */
@@ -57,6 +59,85 @@ export class ProviderError extends Error {
   }
 }
 
+/**
+ * Why a provider call was aborted.
+ *
+ * An AbortError on its own says nothing about whose decision it was, and that
+ * distinction is the whole difference between "the model was too slow" and
+ * "the user closed the tab". Both used to arrive as the same bare
+ * `AbortError: This operation was aborted`, which then escaped classification
+ * entirely and surfaced as HTTP 500 `upstream`.
+ *
+ * The reason travels on the signal itself, so any layer that sees the abort
+ * can attribute it without being told separately.
+ */
+export class TimeoutAbort extends Error {
+  ms: number
+  constructor(ms: number) {
+    super(`the server stopped waiting after ${ms}ms`)
+    this.name = 'TimeoutAbort'
+    this.ms = ms
+  }
+}
+
+export class ClientGoneAbort extends Error {
+  constructor() {
+    super('the caller disconnected')
+    this.name = 'ClientGoneAbort'
+  }
+}
+
+/** Matched by name, so it survives being bundled twice. */
+const named = (reason: unknown, name: string): boolean =>
+  typeof reason === 'object' && reason !== null && (reason as { name?: unknown }).name === name
+
+export const isTimeoutAbort = (reason: unknown): boolean => named(reason, 'TimeoutAbort')
+export const isClientGoneAbort = (reason: unknown): boolean => named(reason, 'ClientGoneAbort')
+
+/** True for the DOMException fetch throws, and for anything wearing its name. */
+export function isAbortError(err: unknown): boolean {
+  return (
+    named(err, 'AbortError') ||
+    named(err, 'TimeoutAbort') ||
+    named(err, 'ClientGoneAbort') ||
+    (typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 20)
+  )
+}
+
+/**
+ * Turns any failure raised during a provider exchange into a ProviderError.
+ *
+ * This is the net that was missing. Only the `fetch()` call used to be inside
+ * a try/catch, so an abort landing during the *body read* — which is exactly
+ * where a slow streaming model spends its time — threw a bare DOMException
+ * that no layer recognised. It travelled all the way to the handler's
+ * catch-all and became `HTTP 500 · upstream · AbortError`.
+ */
+export function providerFailure(
+  err: unknown,
+  signal: AbortSignal,
+  context: string,
+): ProviderError {
+  if (isAbortError(err) || signal.aborted) {
+    const reason = signal.reason
+    if (isClientGoneAbort(reason)) {
+      return new ProviderError(`cancelled while ${context}`, 'cancelled')
+    }
+    if (isTimeoutAbort(reason)) {
+      return new ProviderError(
+        `model call timed out while ${context} — ${(reason as Error).message}`,
+        'timeout',
+      )
+    }
+    // Aborted, but nobody claimed it: the platform, or a signal we did not
+    // create. A timeout is the honest reading, and it is retryable.
+    return new ProviderError(`model call aborted while ${context}`, 'timeout')
+  }
+  if (err instanceof ProviderError) return err
+  const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+  return new ProviderError(`could not reach the model while ${context} — ${detail}`, 'upstream')
+}
+
 export interface ProviderRequest {
   /** The conversation so far, already compressed into a compact brief. */
   brief: string
@@ -95,6 +176,8 @@ export function withRetry(attempt: Provider): Provider {
     try {
       return await attempt(req, signal)
     } catch (err) {
+      // A cancelled or timed-out call is never retried: nobody is waiting,
+      // and there is no budget left inside the server's own deadline.
       if (err instanceof ProviderError && err.kind === 'rate_limited' && !signal.aborted) {
         const waitMs = Math.round((err.retryAfter ?? 1) * 1000)
         if (waitMs <= RETRYABLE_WAIT_CEILING_MS) {

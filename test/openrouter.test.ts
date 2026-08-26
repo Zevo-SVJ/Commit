@@ -14,6 +14,7 @@ import {
   openRouterModel,
 } from '../server/ai/openrouter.js'
 import { ProviderError } from '../server/ai/provider.js'
+import { InvalidModelOutput } from '../server/ai/schema.js'
 import { createProvider, describeProvider, selectProviderName, modelFor } from '../server/ai/factory.js'
 import { handleTurn } from '../server/handler.js'
 
@@ -429,21 +430,28 @@ test('the response is parsed defensively, not assumed to be perfect JSON', () =>
   // An already-parsed object.
   assert.deepEqual(extractOpenRouterJson(wrap({ a: 1 })), { a: 1 })
 
-  const throws = (payload: any, kind: string) =>
-    assert.throws(() => extractOpenRouterJson(payload), (e: unknown) => {
-      assert.ok(e instanceof ProviderError)
-      assert.equal(e.kind, kind)
-      return true
-    })
+  /* A fault in what the model *said* is not a transport fault. These used to
+     be reported as `upstream`, which reads as "the gateway broke" — the
+     opposite of the truth, since the request succeeded and the content was
+     the problem. They now carry their own identity all the way to
+     `invalid_response`. */
+  const content = (payload: any) =>
+    assert.throws(() => extractOpenRouterJson(payload), InvalidModelOutput)
 
-  throws(wrap('I would rather not answer that.'), 'upstream')
-  throws(wrap('{"a": 1'), 'upstream')
-  throws(wrap('', 'stop'), 'upstream')
-  throws({ choices: [] }, 'upstream')
-  throws({}, 'upstream')
+  content(wrap('I would rather not answer that.'))
+  content(wrap('{"a": 1'))
+  content(wrap('', 'stop'))
+  content({ choices: [] })
+  content({})
   // Truncated by the token cap: valid-looking, and wrong.
-  throws(wrap('{"a":1}', 'length'), 'upstream')
-  throws(wrap('{"a":1}', 'content_filter'), 'bad_request')
+  content(wrap('{"a":1}', 'length'))
+
+  // A refusal by the provider is a provider decision, and stays one.
+  assert.throws(() => extractOpenRouterJson(wrap('{"a":1}', 'content_filter')), (e: unknown) => {
+    assert.ok(e instanceof ProviderError)
+    assert.equal(e.kind, 'bad_request')
+    return true
+  })
 })
 
 test('output that parses but is not a turn is rejected before it reaches anyone', async () => {
