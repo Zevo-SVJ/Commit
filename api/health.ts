@@ -37,10 +37,23 @@ const ROUTER = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1
   .replace(/\/+$/, '')
 /* Kept in step with server/ai/openrouter.ts and server/ai/factory.ts by the
    tests in test/openrouter.test.ts, which read both and compare. */
+/* Mirrors CANDIDATE_MODELS in server/ai/openrouter.ts. Kept in step by a test
+   that reads both files and compares. */
+const ROUTER_CANDIDATES = ['openai/gpt-oss-120b:free', 'meta-llama/llama-3.3-70b-instruct:free']
+
+function routerModels(): string[] {
+  const pinned = (process.env.LOCK_MODEL ?? '').trim()
+  const fallback = (process.env.LOCK_MODEL_FALLBACK ?? '').trim()
+  if (pinned) return fallback && fallback !== pinned ? [pinned, fallback] : [pinned]
+  return fallback
+    ? [fallback, ...ROUTER_CANDIDATES.filter((m) => m !== fallback)]
+    : [...ROUTER_CANDIDATES]
+}
+
 const MODEL = IS_GEMINI
   ? process.env.GEMINI_MODEL || 'gemini-2.5-flash'
   : IS_ROUTER
-    ? (process.env.LOCK_MODEL ?? '').trim() || 'openrouter/free'
+    ? routerModels()[0]
     : process.env.OPENAI_MODEL || 'gpt-4.1'
 
 /* Duplicated from gemini.ts on purpose: this file imports nothing, so that if
@@ -101,6 +114,18 @@ type Probe = {
   models?: string[]
   /** The model the deployment is configured to send. */
   selectedModel?: string
+  /** Every model this deployment will try, in order. */
+  modelsConfigured?: string[]
+  /** Which model actually answered the probe's generation. */
+  answeredBy?: string | null
+  /** Whether the catalogue says this model accepts the response_format we send. */
+  supportsResponseFormat?: boolean | null
+  /** Which form of response_format this deployment sends to this model. */
+  responseFormat?: string
+  /** The only check that means "a real journey will work": a validated turn. */
+  returnsValidLockJson?: boolean | null
+  /** Why the contract check failed, when it did. */
+  contractError?: string | null
   /** The provider's own words on the failing call, scrubbed. */
   upstream?: { status: number; code: string | null; message: string; url: string } | null
   /** Which credential transport was used. */
@@ -333,6 +358,19 @@ async function checkQuota(key: string): Promise<Partial<Probe>> {
 
 /* ---- OpenRouter ---------------------------------------------------- */
 
+/* Mirrors MODEL_FORMAT in server/ai/openrouter.ts; a test reads both and
+   compares, so they cannot drift apart unnoticed. */
+const ROUTER_FORMATS: Record<string, string> = {
+  'openai/gpt-oss-120b:free': 'json_schema',
+  'meta-llama/llama-3.3-70b-instruct:free': 'json_object',
+}
+
+function routerFormat(model: string): string {
+  const forced = (process.env.LOCK_MODEL_FORMAT ?? '').trim().toLowerCase()
+  if (forced === 'json_schema' || forced === 'json_object' || forced === 'none') return forced
+  return ROUTER_FORMATS[model] ?? 'json_object'
+}
+
 /**
  * Free, and it costs no tokens: OpenRouter answers this with the key's own
  * metadata. It settles "is this key accepted" before anything is spent.
@@ -372,13 +410,51 @@ async function checkRouterKey(key: string): Promise<Partial<Probe>> {
 }
 
 /**
- * The smallest generation OpenRouter will accept: one token, one word of input.
- * This is the only check that can tell a working deployment from one that will
- * fail on the first real decision, so it runs — but it runs once, and it is
- * the cheapest request the API has.
+ * Free, and it costs no tokens: the catalogue says which parameters a model
+ * accepts. This is the cheap half of "is this model compatible" — it settles
+ * reachability and response_format support without generating anything.
  */
-async function checkRouterGeneration(key: string): Promise<Partial<Probe>> {
+async function checkRouterModel(key: string, model: string): Promise<Partial<Probe>> {
+  try {
+    const res = await fetch(`${ROUTER}/models`, {
+      headers: { authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return {}
+    const data = (await res.json()) as {
+      data?: Array<{ id?: string; supported_parameters?: string[] }>
+    }
+    const listed = (data.data ?? []).find((m) => m.id === model)
+    if (!listed) {
+      return {
+        modelAvailable: false, verdict: 'model_unavailable', supportsResponseFormat: null,
+        advice: `"${model}" is not in the catalogue this key can see. Set LOCK_MODEL to one of the free models listed below.`,
+      }
+    }
+    const params = listed.supported_parameters
+    // An older catalogue may not carry the field at all; absent is unknown,
+    // not unsupported.
+    const supports = Array.isArray(params)
+      ? params.includes('response_format') || params.includes('structured_outputs')
+      : null
+    return { modelAvailable: true, supportsResponseFormat: supports }
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * The only check that answers the question that matters.
+ *
+ * `canGenerate: true` used to mean a one-token "ping" came back, which a
+ * content-safety classifier answers just as happily as a chat model — which is
+ * exactly how a probe reporting all-green sat above a production journey that
+ * could never work. This sends the real contract and runs the real validator,
+ * so a green probe means a real turn parses.
+ */
+async function checkRouterContract(key: string, model: string): Promise<Partial<Probe>> {
   const url = `${ROUTER}/chat/completions`
+  const format = routerFormat(model)
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -388,76 +464,89 @@ async function checkRouterGeneration(key: string): Promise<Partial<Probe>> {
         'X-Title': process.env.LOCK_SITE_NAME || 'Lock',
       },
       body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
+        model,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You produce a single JSON object and nothing else. No prose, no fences, no commentary.',
+          },
+          {
+            role: 'user',
+            content:
+              'Return this exact JSON object and nothing else: {"understanding":{"objective":"probe","known":[],"openQuestions":[],"criticalUnknown":null,"contradiction":null},"progress":0.1,"confidence":0.5,"title":"Probe","step":{"kind":"question","prompt":"Is this working?","why":"Confirms the contract.","options":[],"allowFree":true,"framing":null,"question":null,"commitment":null,"rationale":null,"isFinal":null,"importance":null,"closing":null}}',
+          },
+        ],
+        max_tokens: 400,
+        temperature: 0,
+        ...(format === 'json_object' ? { response_format: { type: 'json_object' } } : {}),
       }),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(20000),
     })
 
     const text = await res.text()
-    let parsed: { error?: { code?: unknown; type?: string; message?: string } } = {}
+    let parsed: any = {}
+    try { parsed = JSON.parse(text) } catch { /* reported below */ }
+
+    if (!res.ok || parsed.error) {
+      const raw = parsed.error?.code
+      const code = parsed.error?.type ?? (raw === undefined || raw === null ? null : String(raw))
+      const message = parsed.error?.message ?? text.slice(0, 300)
+      const status = res.ok ? Number(raw) || 502 : res.status
+      const upstream = { status, code, message: scrub(message), url: '/chat/completions' }
+      const base = { canGenerate: false, returnsValidLockJson: false, providerCode: code, upstream,
+                     responseFormat: format }
+
+      if (status === 401 || status === 403) {
+        return { ...base, keyAccepted: false, verdict: 'auth',
+          advice: `OpenRouter rejected the key. Check ${KEY_VAR} was pasted whole, then redeploy.`,
+          link: 'https://openrouter.ai/settings/keys' }
+      }
+      if (status === 402) {
+        return { ...base, keyAccepted: true, verdict: 'quota',
+          advice: 'The key is valid but this model is not free for this account. Set LOCK_MODEL to one of the free models listed below.',
+          link: 'https://openrouter.ai/settings/credits' }
+      }
+      if (status === 429) {
+        const daily = /per day|daily|day\b/i.test(message)
+        return { ...base, keyAccepted: true, verdict: daily ? 'quota' : 'rate_limited',
+          advice: daily
+            ? 'The free tier\u2019s daily request allowance is spent. It resets on OpenRouter\u2019s schedule; no payment is required.'
+            : 'A per-minute limit. This one clears on its own within a minute.' }
+      }
+      if (status === 404 || /no endpoints found|not a valid model|no allowed providers/i.test(message)) {
+        return { ...base, keyAccepted: true, modelAvailable: false, verdict: 'model_unavailable',
+          advice: `This key cannot reach "${model}". Set LOCK_MODEL to one of the models listed below.` }
+      }
+      if (status === 400 || status === 422) {
+        return { ...base, keyAccepted: true, verdict: 'bad_request',
+          advice: `"${model}" refused the request itself — most often the response_format. Set LOCK_MODEL_FORMAT to json_object or none, or pick another model.` }
+      }
+      return { ...base, keyAccepted: true, verdict: 'upstream' }
+    }
+
+    /* It generated. Now the part that actually matters: does what it wrote
+       survive the same extractor and validator a real turn goes through? */
+    const answeredBy = typeof parsed.model === 'string' ? parsed.model : null
+    const generated = { keyAccepted: true, modelAvailable: true, canGenerate: true,
+                        answeredBy, responseFormat: format }
     try {
-      parsed = JSON.parse(text)
-    } catch {
-      /* a non-JSON body is reported as-is below, scrubbed */
-    }
-
-    // OpenRouter can answer 200 and put the upstream provider's failure in the
-    // body, so success is "no error object", not "res.ok".
-    if (res.ok && !parsed.error) {
+      const { extractOpenRouterJson } = await import('../server/ai/openrouter.js')
+      const { parseTurn } = await import('../server/ai/schema.js')
+      const turn = parseTurn(extractOpenRouterJson(parsed), 0.1)
+      if (!turn?.step?.kind) throw new Error('no step')
+      return { ...generated, returnsValidLockJson: true, verdict: 'ok', advice: null, upstream: null,
+               contractError: null }
+    } catch (err) {
+      const why = err instanceof Error ? scrub(err.message) : String(err)
       return {
-        keyAccepted: true, modelAvailable: true, canGenerate: true,
-        verdict: 'ok', advice: null, upstream: null,
+        ...generated, returnsValidLockJson: false, verdict: 'invalid_response',
+        contractError: why,
+        advice: `"${model}" answered, but not with a turn Lock can use: ${why}. A real journey will fail the same way. Set LOCK_MODEL to one of the free models listed below.`,
       }
     }
-
-    const raw = parsed.error?.code
-    const code = parsed.error?.type ?? (raw === undefined || raw === null ? null : String(raw))
-    const message = parsed.error?.message ?? (parsed.error ? '' : text.slice(0, 300))
-    const status = res.ok ? Number(raw) || 502 : res.status
-    const upstream = { status, code, message: scrub(message), url: '/chat/completions' }
-    const base = { canGenerate: false, providerCode: code, upstream }
-
-    if (status === 401 || status === 403) {
-      return {
-        ...base, keyAccepted: false, verdict: 'auth',
-        advice: `OpenRouter rejected the key. Check ${KEY_VAR} was pasted whole, then redeploy.`,
-        link: 'https://openrouter.ai/settings/keys',
-      }
-    }
-    if (status === 402) {
-      return {
-        ...base, keyAccepted: true, verdict: 'quota',
-        advice:
-          'The key is valid but the account has no credit for this model. Either add credit, or set LOCK_MODEL to one of the free models listed below.',
-        link: 'https://openrouter.ai/settings/credits',
-      }
-    }
-    if (status === 429) {
-      const daily = /per day|daily|day\b/i.test(message)
-      return {
-        ...base, keyAccepted: true, verdict: daily ? 'quota' : 'rate_limited',
-        advice: daily
-          ? 'The free tier’s daily request allowance is spent. It resets on OpenRouter’s schedule; no payment is required.'
-          : 'A per-minute limit. This one clears on its own within a minute.',
-      }
-    }
-    if (status === 404 || /no endpoints found|not a valid model|no allowed providers/i.test(message)) {
-      return {
-        ...base, keyAccepted: true, modelAvailable: false, verdict: 'model_unavailable',
-        advice: `This key cannot reach "${MODEL}". Set LOCK_MODEL to one of the models listed below.`,
-      }
-    }
-    if (status === 400 || status === 422) {
-      return {
-        ...base, keyAccepted: true, verdict: 'bad_request',
-        advice: 'OpenRouter refused the request itself. The message below is its own wording.',
-      }
-    }
-    return { ...base, keyAccepted: true, verdict: 'upstream' }
   } catch {
-    return { canGenerate: false, verdict: 'unreachable',
+    return { canGenerate: false, verdict: 'unreachable', responseFormat: format,
       advice: 'Could not reach OpenRouter from this function.' }
   }
 }
@@ -504,7 +593,12 @@ function renderHtml(body: any): string {
         row('Selected model', body.probe.selectedModel ?? body.model),
         row('Key accepted', body.probe.keyAccepted),
         row('Model available', body.probe.modelAvailable),
+        row('Accepts response_format', body.probe.supportsResponseFormat),
+        row('Response format sent', body.probe.responseFormat),
         row('Can generate', body.probe.canGenerate),
+        row('Returns valid Lock JSON', body.probe.returnsValidLockJson),
+        row('Answered by', body.probe.answeredBy),
+        row('Fallback model', (body.probe.modelsConfigured ?? [])[1] ?? null),
         row('Provider code', body.probe.providerCode),
       ].join('')
     : `<p class="hint">Add <code>?probe=1</code> to test the key against the provider.</p>`
@@ -559,6 +653,11 @@ ${
           row(`${m.auth} · ${m.version}`, `${m.status} ${m.code ?? ''}`.trim()),
         )
         .join('')}`
+    : ''
+}
+${
+  body.probe?.contractError
+    ? `<h2>Why the turn was rejected</h2><p class="hint">${body.probe.contractError}</p>`
     : ''
 }
 ${
@@ -645,9 +744,22 @@ export default async function handler(req: any, b?: any) {
     /* Two calls at most, and only the second costs anything: one token.
        If the free key check already settled that the key is refused, the
        generation call is skipped rather than sent to be refused again. */
-    const first = await checkRouterKey(key)
-    const second = first.keyAccepted === false ? {} : await checkRouterGeneration(key)
-    const merged = { ...first, ...second }
+    /* Three checks, and only the last one costs anything:
+         1. the key, from its own metadata      — free
+         2. the model, from the catalogue       — free, and it answers
+            "does this model even accept our response_format"
+         3. one real LOCK turn, validated       — one small generation
+       Each is skipped once an earlier one has settled the verdict, so a
+       rejected key never pays for a generation it cannot make. */
+    const credential = await checkRouterKey(key)
+    const capability =
+      credential.keyAccepted === false ? {} : await checkRouterModel(key, MODEL)
+    const contract =
+      credential.keyAccepted === false || capability.modelAvailable === false
+        ? {}
+        : await checkRouterContract(key, MODEL)
+
+    const merged = { ...credential, ...capability, ...contract }
     // The catalogue is free, but it is only the fix when something is broken.
     const models =
       merged.verdict && merged.verdict !== 'ok' && merged.keyAccepted !== false
@@ -657,6 +769,8 @@ export default async function handler(req: any, b?: any) {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
       verdict: 'unknown', providerCode: null, advice: null, link: null,
       selectedModel: MODEL,
+      modelsConfigured: routerModels(),
+      responseFormat: routerFormat(MODEL),
       ...merged, ...models,
     }
   } else if (wantsProbe && key) {

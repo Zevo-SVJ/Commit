@@ -62,6 +62,6 @@ export function describeProvider(env: NodeJS.ProcessEnv = process.env) {
     name,
     model: modelFor(name, env),
     keyVariable: keyVariableFor(name),
-    selectedBy: (env.LOCK_PROVIDER ?? '').trim() ? 'LOCK_PROVIDER' : 'the default (openrouter)',
+      selectedBy: (env.LOCK_PROVIDER ?? '').trim() ? 'LOCK_PROVIDER' : 'the default (openrouter)',
   }
 }

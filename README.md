@@ -50,7 +50,9 @@ Lock talks to **OpenRouter**. One variable is required.
 | Variable | Notes |
 | --- | --- |
 | `OPENROUTER_API_KEY` | **Required.** Server-side only. |
-| `LOCK_MODEL` | Optional. Defaults to `openrouter/free`. |
+| `LOCK_MODEL` | Optional. Pins one model. Defaults to `openai/gpt-oss-120b:free`. |
+| `LOCK_MODEL_FALLBACK` | Optional. Tried only when the first model returns nothing usable. |
+| `LOCK_MODEL_FORMAT` | Optional. `json_schema` \| `json_object` \| `none`. Overrides the per-model default. |
 | `LOCK_SITE_URL` / `LOCK_SITE_NAME` | Optional OpenRouter attribution headers. |
 | `OPENROUTER_BASE_URL` | Optional. Gateway or regional endpoint. |
 | `LOCK_PROVIDER` | `openrouter` (default), or `openai` / `gemini` to opt into a legacy provider. |
@@ -65,12 +67,28 @@ reported as `OPENROUTER_API_KEY is not configured`.
 
 ### Which model
 
-`openrouter/free` is OpenRouter's router over its free models. It only ever
-selects models that cost nothing, and it narrows that pool to models that
-support the features a request uses — for Lock, structured outputs. The trade
-is that the model varies between requests; set `LOCK_MODEL` to a specific slug
-to pin one. `/probe?probe=1` lists the free slugs your key can actually reach,
-so the key is the source of truth rather than a list in this file.
+Two concrete free models, tried in order:
+
+1. `openai/gpt-oss-120b:free` — enforces a JSON schema natively.
+2. `meta-llama/llama-3.3-70b-instruct:free` — accepts `response_format` but
+   does not enforce a schema, so it is asked for a JSON object and the
+   validator carries the rest.
+
+**Not `openrouter/free`.** That router selects at random from everything free,
+and everything free includes models that are not chat models: a live journey
+was routed to an NVIDIA NemoGuard content-safety classifier, which answered
+`User Safety: safe` — correctly, for what it is — and no amount of parsing
+turns that into a decision. A router cannot promise instruction-following.
+
+The second model is tried only when the first produced nothing usable at all
+(a safety verdict, prose, a truncated object, a refused request shape). It is
+never tried after a rate limit, an empty balance, a rejected key, a timeout or
+a cancellation, because those would fail identically anywhere. One user action
+therefore costs one generation, or two in the worst case — never a duplicated
+decision, because the first produced none.
+
+`/probe?probe=1` reports which models this key can actually reach and whether
+the configured one returns a turn Lock can validate.
 
 CI fails the build if any key or key name reaches the client
 bundle.

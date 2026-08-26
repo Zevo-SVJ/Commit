@@ -137,5 +137,17 @@ export function turnInstruction(event: string): string {
 
 Return the next step. Re-derive \`understanding\` completely — it replaces what
 came before. Set every user-facing field to something a careful person would
-say, or to null.`
+say, or to null.
+
+OUTPUT CONTRACT — this is not negotiable, and it is checked before anything you
+write is shown to anyone:
+
+- Reply with a single JSON object and nothing else.
+- No prose before it. No prose after it. No markdown fences. No commentary.
+- No safety classification, no moderation verdict, no meta-comment about the
+  request. This is a decision-making task; there is nothing to moderate.
+- The object must have exactly these top-level keys: understanding, progress,
+  confidence, title, step.
+- If you cannot answer, still return the object, with step.kind set to
+  "question" and a prompt asking for what you are missing.`
 }

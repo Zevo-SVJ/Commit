@@ -22,19 +22,57 @@ import {
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'
 
 /**
- * OpenRouter's free-models router.
+ * Concrete free chat models, in preference order. Deliberately not a router.
  *
- * Chosen over pinning one `:free` model because free model availability churns
- * — a slug that is free today can be paid or retired next month, and this app
- * has no budget to fall back on. The router only ever selects from free models,
- * and it filters that pool down to models that support the features the request
- * actually uses, which for Lock means structured outputs.
+ * `openrouter/free` was the default here and it is what broke production. It
+ * selects at random from everything free, and everything free includes models
+ * that are not chat models at all: one real journey was routed to an NVIDIA
+ * NemoGuard content-safety classifier, which answered `User Safety: safe` —
+ * its job — and nothing downstream could turn that into a decision. A router
+ * cannot promise instruction-following, so it is not something to build on.
  *
- * The cost of the router is that the model varies between requests. Set
- * `LOCK_MODEL` to a specific slug to pin one; `/probe` lists the slugs the
- * configured key can actually reach.
+ * First choice enforces a JSON schema natively. Second is a fallback for when
+ * the first is unreachable or answers with something unusable.
  */
-const DEFAULT_MODEL = 'openrouter/free'
+const CANDIDATE_MODELS = [
+  'openai/gpt-oss-120b:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+]
+
+/**
+ * How a model wants to be asked for JSON.
+ *
+ * `json_schema` is enforcement: the model cannot emit anything else.
+ * `json_object` only promises valid JSON, not our shape — the prompt and the
+ * validator carry the rest. Sending `json_schema` to a model that does not
+ * enforce it is a 400, so the default for anything unlisted is the weaker,
+ * safer form rather than an assumption.
+ */
+export type ResponseFormat = 'json_schema' | 'json_object' | 'none'
+
+const MODEL_FORMAT: Record<string, ResponseFormat> = {
+  'openai/gpt-oss-120b:free': 'json_schema',
+  'meta-llama/llama-3.3-70b-instruct:free': 'json_object',
+}
+
+export function formatFor(model: string, env: NodeJS.ProcessEnv = process.env): ResponseFormat {
+  const forced = (env.LOCK_MODEL_FORMAT ?? '').trim().toLowerCase()
+  if (forced === 'json_schema' || forced === 'json_object' || forced === 'none') return forced
+  return MODEL_FORMAT[model] ?? 'json_object'
+}
+
+/**
+ * The models this deployment will try, in order.
+ *
+ * `LOCK_MODEL` pins one outright. `LOCK_MODEL_FALLBACK` adds a second for when
+ * the first cannot produce a usable turn.
+ */
+export function openRouterModels(env: NodeJS.ProcessEnv = process.env): string[] {
+  const pinned = (env.LOCK_MODEL ?? '').trim()
+  const fallback = (env.LOCK_MODEL_FALLBACK ?? '').trim()
+  if (pinned) return fallback && fallback !== pinned ? [pinned, fallback] : [pinned]
+  return fallback ? [fallback, ...CANDIDATE_MODELS.filter((m) => m !== fallback)] : [...CANDIDATE_MODELS]
+}
 
 /**
  * Reads OpenRouter's error envelope.
@@ -122,20 +160,81 @@ export function attributionHeaders(env: NodeJS.ProcessEnv): Record<string, strin
   return headers
 }
 
+/** The model a turn is sent to first. What /probe and the diagnostics name. */
 export function openRouterModel(env: NodeJS.ProcessEnv = process.env): string {
-  return (env.LOCK_MODEL ?? '').trim() || DEFAULT_MODEL
+  return openRouterModels(env)[0]
+}
+
+/** The request body fragment for a given format. */
+export function responseFormatFor(format: ResponseFormat): Record<string, unknown> {
+  if (format === 'json_schema') {
+    return {
+      response_format: {
+        type: 'json_schema',
+        json_schema: { name: 'lock_turn', strict: true, schema: TURN_JSON_SCHEMA },
+      },
+    }
+  }
+  if (format === 'json_object') return { response_format: { type: 'json_object' } }
+  return {}
 }
 
 export function openRouterBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return (env.OPENROUTER_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, '')
 }
 
+/**
+ * Which failures a *different model* could plausibly fix.
+ *
+ * Only two: the model produced nothing usable (a safety verdict, prose, a
+ * truncated object), or it refused the request shape / could not be reached.
+ * Everything else — no credit, a rejected key, a rate limit, a timeout, a
+ * cancellation — would fail identically on any model, so trying a second one
+ * spends an allowance to learn nothing.
+ */
+function anotherModelCouldHelp(err: unknown): boolean {
+  if (err instanceof InvalidModelOutput) return true
+  return (
+    err instanceof ProviderError &&
+    (err.kind === 'model_unavailable' || err.kind === 'bad_request')
+  )
+}
+
+/**
+ * One generation per model, at most one fallback.
+ *
+ * The fallback is safe by construction: it only runs when the previous model
+ * produced no usable turn at all, so it cannot duplicate a user action or
+ * commit a decision twice. `withRetry` sits inside the loop rather than around
+ * it, so a rate limit retries its own model once instead of replaying the
+ * whole chain.
+ */
 export function createOpenRouterProvider(env: NodeJS.ProcessEnv = process.env): Provider {
-  return withRetry((req, signal) => attempt(env, req, signal))
+  const models = openRouterModels(env)
+  return async (req, signal) => {
+    let last: unknown
+    for (let i = 0; i < models.length; i++) {
+      const model = models[i]
+      try {
+        return await withRetry((r, s) => attempt(env, model, r, s))(req, signal)
+      } catch (err) {
+        last = err
+        const more = i < models.length - 1
+        if (!more || !anotherModelCouldHelp(err) || signal.aborted) throw err
+        console.warn(
+          `[lock] ${model} produced nothing usable (${
+            err instanceof Error ? err.message.slice(0, 140) : String(err)
+          }); trying ${models[i + 1]}`,
+        )
+      }
+    }
+    throw last
+  }
 }
 
 async function attempt(
   env: NodeJS.ProcessEnv,
+  model: string,
   req: ProviderRequest,
   signal: AbortSignal,
 ): Promise<unknown> {
@@ -161,7 +260,7 @@ async function attempt(
         ...attributionHeaders(env),
       },
       body: JSON.stringify({
-        model: openRouterModel(env),
+        model,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: `${req.brief}\n\n${req.instruction}` },
@@ -172,12 +271,9 @@ async function attempt(
         // reasoning before it writes anything. Too low a cap truncates the
         // JSON mid-object and the turn is discarded as unparseable.
         max_tokens: 2048,
-        // Asking for a schema is also what makes the free router narrow its
-        // pool to models that can honour one.
-        response_format: {
-          type: 'json_schema',
-          json_schema: { name: 'lock_turn', strict: true, schema: TURN_JSON_SCHEMA },
-        },
+        // Only ever the form this model actually supports. Asking a model
+        // that cannot enforce a schema to enforce one is a 400.
+        ...responseFormatFor(formatFor(model, env)),
       }),
     })
 
@@ -211,8 +307,8 @@ async function attempt(
     }
 
     console.log(
-      `[lock] openrouter ok in ${Date.now() - started}ms · model ${
-        typeof payload.model === 'string' ? payload.model : openRouterModel(env)
+      `[lock] openrouter ok in ${Date.now() - started}ms · asked ${model} · answered ${
+        typeof payload.model === 'string' ? payload.model : 'unknown'
       }`,
     )
     return extractOpenRouterJson(payload)
@@ -222,10 +318,50 @@ async function attempt(
     if (err instanceof InvalidModelOutput) throw err
     const failure = providerFailure(err, signal, stage)
     if (failure !== err) {
-      console.error(`[lock] openrouter failed after ${Date.now() - started}ms while ${stage}`)
+      console.error(
+        `[lock] openrouter (${model}) failed after ${Date.now() - started}ms while ${stage}`,
+      )
     }
     throw failure
   }
+}
+
+/**
+ * A content-safety classifier answering instead of a chat model.
+ *
+ * NVIDIA's NemoGuard models — free, and therefore in the pool a router draws
+ * from — emit exactly this: a `User Safety` verdict, sometimes as JSON,
+ * sometimes as the bare line `User Safety: safe`. It is not malformed output
+ * and it is not a refusal; it is a different model doing a different job.
+ * Naming it is what makes the failure diagnosable instead of looking like the
+ * model "did not return JSON".
+ */
+const SAFETY_VERDICT_TEXT = /^\s*(user|response)\s*safety\s*:\s*(safe|unsafe)\b/i
+const SAFETY_VERDICT_ONLY = /^\s*(safe|unsafe)\s*$/i
+
+export function safetyVerdict(text: string): string | null {
+  const t = text.trim()
+  if (SAFETY_VERDICT_TEXT.test(t) || SAFETY_VERDICT_ONLY.test(t)) {
+    return t.slice(0, 80)
+  }
+  return null
+}
+
+/** The same verdict, when the classifier emitted it as the JSON it was built to emit. */
+function safetyVerdictObject(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const keys = Object.keys(value as object)
+  const hit = keys.find((k) => /^(user|response)\s*safety$/i.test(k.trim()))
+  if (!hit) return null
+  return `${hit}: ${String((value as Record<string, unknown>)[hit]).slice(0, 40)}`
+}
+
+/** Thrown when the answer came from a model that cannot do this job at all. */
+export function wrongKindOfModel(detail: string): InvalidModelOutput {
+  return new InvalidModelOutput(
+    `the provider returned a content-safety verdict (${JSON.stringify(detail)}), not a decision — ` +
+      'the model that answered is a safety classifier, not a chat model',
+  )
 }
 
 /**
@@ -256,7 +392,12 @@ export function extractOpenRouterJson(payload: Record<string, unknown>): unknown
   const message = (choice.message ?? {}) as Record<string, unknown>
   const content = message.content
 
-  if (typeof content === 'string' && content.trim()) return safeParse(content)
+  if (typeof content === 'string' && content.trim()) {
+    const parsed = safeParse(content)
+    const verdict = safetyVerdictObject(parsed)
+    if (verdict) throw wrongKindOfModel(verdict)
+    return parsed
+  }
 
   // Some models answer with content parts rather than a single string.
   if (Array.isArray(content)) {
@@ -267,7 +408,11 @@ export function extractOpenRouterJson(payload: Record<string, unknown>): unknown
   }
 
   // A rare gateway shape: the object already parsed.
-  if (content && typeof content === 'object') return content
+  if (content && typeof content === 'object') {
+    const verdict = safetyVerdictObject(content)
+    if (verdict) throw wrongKindOfModel(verdict)
+    return content
+  }
 
   throw new InvalidModelOutput('the model returned an empty message')
 }
@@ -299,6 +444,12 @@ function safeParse(text: string): unknown {
       /* fall through */
     }
   }
+
+  // Before calling it malformed: a safety classifier answering is a different
+  // fault with a different fix, and saying so is the difference between
+  // "the model did not return JSON" and "the wrong model answered".
+  const verdict = safetyVerdict(trimmed)
+  if (verdict) throw wrongKindOfModel(verdict)
 
   // A refusal, or prose with no JSON in it at all.
   throw new InvalidModelOutput(

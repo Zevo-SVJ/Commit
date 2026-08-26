@@ -270,7 +270,9 @@ test('a malformed provider response reads as invalid_response, not upstream', as
     const res = await withDeadline(providerFor(g.url), 3000)(START)
     assert.equal(res.status, 502)
     assert.equal((res.body as any).error.code, 'invalid_response')
-    assert.equal(g.calls(), 1, 'a bad answer is not re-asked automatically')
+    // Unusable output is the one thing a different model might fix, so the
+    // fallback runs — once. Never the same model twice.
+    assert.equal(g.calls(), 2, 'primary then fallback, and no further')
   } finally { g.close() }
 })
 
@@ -304,14 +306,17 @@ test('a body that is not JSON at all does not crash the turn', async () => {
 /* ---- HTTP faults ------------------------------------------------------ */
 
 test('provider HTTP faults each keep their own code, status and retryability', async () => {
-  const cases: Array<[number, unknown, number, string, boolean]> = [
-    [500, { error: { code: 500, message: 'Provider returned an error' } }, 502, 'upstream', true],
-    [429, { error: { code: 429, message: 'Rate limit exceeded' } }, 429, 'rate_limited', true],
-    [402, { error: { code: 402, message: 'Insufficient credits' } }, 402, 'quota', false],
-    [401, { error: { code: 401, message: 'No auth credentials found' } }, 401, 'auth', false],
-    [404, { error: { code: 404, message: 'No endpoints found' } }, 502, 'model_unavailable', false],
+  /* The last number is how many provider requests the fault may cost. Only a
+     fault a *different model* could fix is allowed to cost two; everything
+     else would fail identically anywhere, so it costs one. */
+  const cases: Array<[number, unknown, number, string, boolean, number]> = [
+    [500, { error: { code: 500, message: 'Provider returned an error' } }, 502, 'upstream', true, 1],
+    [429, { error: { code: 429, message: 'Rate limit exceeded' } }, 429, 'rate_limited', true, 1],
+    [402, { error: { code: 402, message: 'Insufficient credits' } }, 402, 'quota', false, 1],
+    [401, { error: { code: 401, message: 'No auth credentials found' } }, 401, 'auth', false, 1],
+    [404, { error: { code: 404, message: 'No endpoints found' } }, 502, 'model_unavailable', false, 2],
   ]
-  for (const [status, body, expectStatus, expectCode, retryable] of cases) {
+  for (const [status, body, expectStatus, expectCode, retryable, cost] of cases) {
     // retry-after is deliberately long so the single permitted retry does not
     // fire and muddy the call count.
     const g = await gateway({ kind: 'status', status, body, headers: { 'retry-after': '120' } })
@@ -320,7 +325,7 @@ test('provider HTTP faults each keep their own code, status and retryability', a
       assert.equal(res.status, expectStatus, `${status} → ${expectStatus}`)
       assert.equal((res.body as any).error.code, expectCode)
       assert.equal((res.body as any).error.retryable, retryable)
-      assert.equal(g.calls(), 1, `${status} must cost exactly one request`)
+      assert.equal(g.calls(), cost, `${status} must cost exactly ${cost} request(s)`)
       assert.ok(!JSON.stringify(res.body).includes(KEY))
     } finally { g.close() }
   }

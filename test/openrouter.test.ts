@@ -12,6 +12,9 @@ import {
   extractOpenRouterJson,
   attributionHeaders,
   openRouterModel,
+  openRouterModels,
+  formatFor,
+  responseFormatFor,
 } from '../server/ai/openrouter.js'
 import { ProviderError } from '../server/ai/provider.js'
 import { InvalidModelOutput } from '../server/ai/schema.js'
@@ -155,22 +158,56 @@ test('OpenRouter is the provider, and nothing falls back to it or away from it',
   const described = describeProvider(env({}))
   assert.equal(described.name, 'openrouter')
   assert.equal(described.keyVariable, 'OPENROUTER_API_KEY')
-  assert.equal(described.model, 'openrouter/free')
+  assert.equal(described.model, 'openai/gpt-oss-120b:free')
 })
 
-test('the model is server-side, defaulted, and overridable through LOCK_MODEL', () => {
+test('the model is a concrete model, server-side, and overridable', () => {
   const env = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv
-  assert.equal(openRouterModel(env({})), 'openrouter/free')
-  assert.equal(modelFor('openrouter', env({})), 'openrouter/free')
-  assert.equal(openRouterModel(env({ LOCK_MODEL: 'meta-llama/llama-3.3-70b-instruct:free' })),
-    'meta-llama/llama-3.3-70b-instruct:free')
+
+  /* The router is gone on purpose. `openrouter/free` picks at random from
+     everything free, which includes content-safety classifiers — and one of
+     those answering `User Safety: safe` is what broke the live journey. */
+  assert.equal(openRouterModel(env({})), 'openai/gpt-oss-120b:free')
+  assert.ok(!openRouterModels(env({})).some((m) => m.startsWith('openrouter/')),
+    'no router may be in the default chain')
+  assert.equal(modelFor('openrouter', env({})), 'openai/gpt-oss-120b:free')
+
+  // A fallback exists, and it is a different concrete model.
+  const chain = openRouterModels(env({}))
+  assert.equal(chain.length, 2)
+  assert.notEqual(chain[0], chain[1])
+
+  // Pinning wins outright, and pins alone.
+  assert.deepEqual(openRouterModels(env({ LOCK_MODEL: 'x/y:free' })), ['x/y:free'])
+  assert.deepEqual(
+    openRouterModels(env({ LOCK_MODEL: 'x/y:free', LOCK_MODEL_FALLBACK: 'a/b:free' })),
+    ['x/y:free', 'a/b:free'],
+  )
   // Whitespace around a pasted value must not become part of the slug.
   assert.equal(openRouterModel(env({ LOCK_MODEL: '  qwen/qwen3-8b:free  ' })), 'qwen/qwen3-8b:free')
   // An empty variable is not a model name.
-  assert.equal(openRouterModel(env({ LOCK_MODEL: '' })), 'openrouter/free')
-  // LOCK_MODEL belongs to OpenRouter; OpenAI reads its own, so one name
-  // cannot end up holding a slug meant for the other provider.
-  assert.equal(modelFor('openai', env({ LOCK_MODEL: 'openrouter/free' })), 'gpt-4.1')
+  assert.equal(openRouterModel(env({ LOCK_MODEL: '' })), 'openai/gpt-oss-120b:free')
+  // LOCK_MODEL belongs to OpenRouter; OpenAI reads its own.
+  assert.equal(modelFor('openai', env({ LOCK_MODEL: 'x/y:free' })), 'gpt-4.1')
+})
+
+test('each model is asked for JSON in the form it actually supports', () => {
+  const env = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv
+
+  // Enforced schema where the model enforces schemas.
+  assert.equal(formatFor('openai/gpt-oss-120b:free', env({})), 'json_schema')
+  // Llama 3.3 accepts response_format but does not enforce a schema; asking it
+  // to enforce one is a 400, so it is asked for a JSON object instead.
+  assert.equal(formatFor('meta-llama/llama-3.3-70b-instruct:free', env({})), 'json_object')
+  // Anything unlisted gets the weaker, safer form rather than an assumption.
+  assert.equal(formatFor('someone/unknown:free', env({})), 'json_object')
+  // And it can be forced when a model turns out to differ.
+  assert.equal(formatFor('openai/gpt-oss-120b:free', env({ LOCK_MODEL_FORMAT: 'none' })), 'none')
+
+  assert.equal((responseFormatFor('json_schema') as any).response_format.type, 'json_schema')
+  assert.equal((responseFormatFor('json_schema') as any).response_format.json_schema.strict, true)
+  assert.deepEqual(responseFormatFor('json_object'), { response_format: { type: 'json_object' } })
+  assert.deepEqual(responseFormatFor('none'), {})
 })
 
 test('with no key, the failure names OPENROUTER_API_KEY and nothing else', async () => {
@@ -211,7 +248,7 @@ test('one turn is one POST to chat/completions, carrying the key as a bearer tok
     assert.equal(sent.method, 'POST')
     assert.equal(sent.url, '/api/v1/chat/completions')
     assert.equal(sent.headers.authorization, `Bearer ${KEY}`)
-    assert.equal(sent.body.model, 'openrouter/free')
+    assert.equal(sent.body.model, 'openai/gpt-oss-120b:free')
     assert.equal(sent.body.messages[0].role, 'system')
     assert.equal(sent.body.messages[1].role, 'user')
     // Asking for a schema is also what narrows the free router's pool to
@@ -530,11 +567,23 @@ test('the deployed function reaches OpenRouter under both host signatures', asyn
 })
 
 test('the deployed probe makes one real generation request and reports what came back', async () => {
-  const g = await gateway((r) =>
-    r.url.endsWith('/key')
-      ? { status: 200, body: { data: { label: 'lock', is_free_tier: true } } }
-      : { status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: 'ok' } }] } },
-  )
+  const g = await gateway((r) => {
+    if (r.url.endsWith('/key')) {
+      return { status: 200, body: { data: { label: 'lock', is_free_tier: true } } }
+    }
+    if (r.url.endsWith('/models')) {
+      return { status: 200, body: { data: [
+        { id: 'openai/gpt-oss-120b:free',
+          supported_parameters: ['response_format', 'structured_outputs'],
+          pricing: { prompt: '0', completion: '0' } },
+      ] } }
+    }
+    // A real, validatable turn — the probe now runs the real validator on it.
+    return { status: 200, body: {
+      model: 'openai/gpt-oss-120b:free',
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }],
+    } }
+  })
   await withEnv(
     {
       ...CLEAN, OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${g.url}/api/v1`,
@@ -549,7 +598,7 @@ test('the deployed probe makes one real generation request and reports what came
 
         assert.equal(json.provider, 'openrouter')
         assert.equal(json.providerKeyVariable, 'OPENROUTER_API_KEY')
-        assert.equal(json.model, 'openrouter/free')
+        assert.equal(json.model, 'openai/gpt-oss-120b:free')
         assert.equal(json.env, 'production')
         assert.equal(json.commit, 'abcdef1')
 
@@ -563,14 +612,21 @@ test('the deployed probe makes one real generation request and reports what came
         assert.equal(json.probe.modelAvailable, true)
         assert.equal(json.probe.canGenerate, true)
         assert.equal(json.probe.verdict, 'ok')
-        assert.equal(json.probe.selectedModel, 'openrouter/free')
+        assert.equal(json.probe.selectedModel, 'openai/gpt-oss-120b:free')
+        // The check that a one-token "ping" could never make.
+        assert.equal(json.probe.returnsValidLockJson, true)
+        assert.equal(json.probe.supportsResponseFormat, true)
+        assert.equal(json.probe.responseFormat, 'json_schema')
+        assert.equal(json.probe.answeredBy, 'openai/gpt-oss-120b:free')
+        assert.deepEqual(json.probe.modelsConfigured,
+          ['openai/gpt-oss-120b:free', 'meta-llama/llama-3.3-70b-instruct:free'])
 
         // A real generation request was made, and it was the smallest one.
         const generation = g.seen.filter((s) => s.url.endsWith('/chat/completions'))
         assert.equal(generation.length, 1, 'exactly one generation, no more')
         assert.equal(generation[0].method, 'POST')
-        assert.equal(generation[0].body.max_tokens, 1)
-        assert.equal(generation[0].body.model, 'openrouter/free')
+        assert.ok(generation[0].body.max_tokens <= 400, 'the probe stays small')
+        assert.equal(generation[0].body.model, 'openai/gpt-oss-120b:free')
         assert.equal(generation[0].headers.authorization, `Bearer ${KEY}`)
 
         // Nothing about the key comes back.
@@ -603,6 +659,9 @@ test('the probe keeps each failure distinct, in JSON and on the page', async () 
         return {
           status: 200,
           body: { data: [
+            { id: 'openai/gpt-oss-120b:free',
+              supported_parameters: ['response_format', 'structured_outputs'],
+              pricing: { prompt: '0', completion: '0' } },
             { id: 'qwen/qwen3-8b:free', pricing: { prompt: '0', completion: '0' } },
             { id: 'openai/gpt-4.1', pricing: { prompt: '0.000002', completion: '0.000008' } },
           ] },
@@ -642,7 +701,8 @@ test('the probe keeps each failure distinct, in JSON and on the page', async () 
             assert.equal(json.probe.keyAccepted, true)
             // When the key is fine but something else is not, the catalogue
             // is the fix — and only the free slugs are worth offering.
-            assert.deepEqual(json.probe.models, ['qwen/qwen3-8b:free'])
+            assert.deepEqual(json.probe.models,
+              ['openai/gpt-oss-120b:free', 'qwen/qwen3-8b:free'])
           }
           if (verdict === 'model_unavailable') assert.equal(json.probe.modelAvailable, false)
 
@@ -762,16 +822,32 @@ test('no part of the browser bundle knows the key exists', async () => {
 })
 
 test('the probe and the provider agree on which model is configured', async () => {
-  // Two files, one default. If they drift, the diagnostic starts describing a
-  // deployment that does not exist — which is how the last outage stayed
-  // invisible for so long.
+  // Two files carry the same model table. If they drift, the diagnostic starts
+  // describing a deployment that does not exist — which is how the last
+  // outage stayed invisible for so long.
   const health = await readFile('api/health.ts', 'utf8')
   const provider = await readFile('server/ai/openrouter.ts', 'utf8')
-  const fromHealth = /'openrouter\/free'/.test(health)
-  const fromProvider = /const DEFAULT_MODEL = 'openrouter\/free'/.test(provider)
-  assert.ok(fromHealth && fromProvider, 'both files must name the same default model')
+  for (const model of ['openai/gpt-oss-120b:free', 'meta-llama/llama-3.3-70b-instruct:free']) {
+    assert.ok(health.includes(model), `the probe must know about ${model}`)
+    assert.ok(provider.includes(model), `the provider must know about ${model}`)
+  }
+  assert.ok(health.includes("'json_schema'") && provider.includes("'json_schema'"))
+  // And neither may quietly reintroduce the router.
+  assert.ok(!provider.includes("'openrouter/free'"), 'the router must not come back')
 
-  const g = await gateway()
+  const g = await gateway((r) => {
+    if (r.url.endsWith('/key')) return { status: 200, body: { data: { label: 'lock' } } }
+    if (r.url.endsWith('/models')) {
+      return { status: 200, body: { data: [
+        { id: 'qwen/qwen3-8b:free', supported_parameters: ['response_format'],
+          pricing: { prompt: '0', completion: '0' } },
+      ] } }
+    }
+    return { status: 200, body: {
+      model: 'qwen/qwen3-8b:free',
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }],
+    } }
+  })
   await withEnv(
     {
       ...CLEAN, OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${g.url}/api/v1`,
@@ -784,8 +860,14 @@ test('the probe and the provider agree on which model is configured', async () =
         const json = await (await fetch(`${h.url}/api/health?probe=1`)).json()
         assert.equal(json.model, 'qwen/qwen3-8b:free')
         assert.equal(json.probe.selectedModel, 'qwen/qwen3-8b:free')
+        assert.deepEqual(json.probe.modelsConfigured, ['qwen/qwen3-8b:free'])
+        // An unlisted model is asked for a JSON object, never a schema.
+        assert.equal(json.probe.responseFormat, 'json_object')
+        assert.equal(json.probe.returnsValidLockJson, true)
         const generation = g.seen.filter((s) => s.url.endsWith('/chat/completions'))
+        assert.equal(generation.length, 1, 'the probe generates once, never more')
         assert.equal(generation[0].body.model, 'qwen/qwen3-8b:free')
+        assert.equal(generation[0].body.response_format.type, 'json_object')
       } finally { h.close(); g.close() }
     },
   )
