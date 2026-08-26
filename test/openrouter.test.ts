@@ -13,7 +13,12 @@ import {
   attributionHeaders,
   openRouterModel,
   openRouterModels,
+  forgetCatalogue,
   formatFor,
+  formatFromParameters,
+  chooseModels,
+  readCatalogue,
+  isSuitableModel,
   responseFormatFor,
 } from '../server/ai/openrouter.js'
 import { ProviderError } from '../server/ai/provider.js'
@@ -53,13 +58,24 @@ type Recorded = { method: string; url: string; headers: Record<string, string>; 
 type Reply = { status: number; body: unknown; headers?: Record<string, string> }
 
 /** A stand-in OpenRouter. Records every request so the request shape is provable. */
+const CATALOGUE = {
+  data: [
+    { id: 'google/gemma-4-31b-it:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format'] },
+    { id: 'z-ai/glm-5.2:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format', 'structured_outputs'] },
+  ],
+}
+
 function gateway(
   reply: (r: Recorded) => Reply = () => ({
     status: 200,
     body: { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }] },
   }),
+  catalogue: unknown = CATALOGUE,
 ) {
   const seen: Recorded[] = []
+  forgetCatalogue()
   return new Promise<{ url: string; close: () => void; seen: Recorded[] }>((resolve) => {
     const s: Server = createServer((req, res) => {
       const chunks: Buffer[] = []
@@ -73,7 +89,11 @@ function gateway(
           headers: req.headers as Record<string, string>, body: parsed,
         }
         seen.push(record)
-        const out = reply(record)
+        // The catalogue is infrastructure, not a scenario: served centrally so
+        // every test exercises the same resolution the provider really does.
+        const out = record.url.endsWith('/models')
+          ? { status: 200, body: catalogue }
+          : reply(record)
         res.writeHead(out.status, { 'content-type': 'application/json', ...(out.headers ?? {}) })
         res.end(typeof out.body === 'string' ? out.body : JSON.stringify(out.body))
       })
@@ -158,7 +178,7 @@ test('OpenRouter is the provider, and nothing falls back to it or away from it',
   const described = describeProvider(env({}))
   assert.equal(described.name, 'openrouter')
   assert.equal(described.keyVariable, 'OPENROUTER_API_KEY')
-  assert.equal(described.model, 'openai/gpt-oss-120b:free')
+  assert.equal(described.model, 'google/gemma-4-31b-it:free')
 })
 
 test('the model is a concrete model, server-side, and overridable', () => {
@@ -167,15 +187,17 @@ test('the model is a concrete model, server-side, and overridable', () => {
   /* The router is gone on purpose. `openrouter/free` picks at random from
      everything free, which includes content-safety classifiers — and one of
      those answering `User Safety: safe` is what broke the live journey. */
-  assert.equal(openRouterModel(env({})), 'openai/gpt-oss-120b:free')
+  assert.equal(openRouterModel(env({})), 'google/gemma-4-31b-it:free')
   assert.ok(!openRouterModels(env({})).some((m) => m.startsWith('openrouter/')),
     'no router may be in the default chain')
-  assert.equal(modelFor('openrouter', env({})), 'openai/gpt-oss-120b:free')
+  assert.equal(modelFor('openrouter', env({})), 'google/gemma-4-31b-it:free')
 
   // A fallback exists, and it is a different concrete model.
   const chain = openRouterModels(env({}))
-  assert.equal(chain.length, 2)
+  assert.ok(chain.length >= 2)
   assert.notEqual(chain[0], chain[1])
+  // No specialist ever enters the order, whatever the catalogue offers.
+  assert.ok(chain.every((m) => !/code|guard|safety|embed|whisper/i.test(m)))
 
   // Pinning wins outright, and pins alone.
   assert.deepEqual(openRouterModels(env({ LOCK_MODEL: 'x/y:free' })), ['x/y:free'])
@@ -186,7 +208,7 @@ test('the model is a concrete model, server-side, and overridable', () => {
   // Whitespace around a pasted value must not become part of the slug.
   assert.equal(openRouterModel(env({ LOCK_MODEL: '  qwen/qwen3-8b:free  ' })), 'qwen/qwen3-8b:free')
   // An empty variable is not a model name.
-  assert.equal(openRouterModel(env({ LOCK_MODEL: '' })), 'openai/gpt-oss-120b:free')
+  assert.equal(openRouterModel(env({ LOCK_MODEL: '' })), 'google/gemma-4-31b-it:free')
   // LOCK_MODEL belongs to OpenRouter; OpenAI reads its own.
   assert.equal(modelFor('openai', env({ LOCK_MODEL: 'x/y:free' })), 'gpt-4.1')
 })
@@ -194,15 +216,20 @@ test('the model is a concrete model, server-side, and overridable', () => {
 test('each model is asked for JSON in the form it actually supports', () => {
   const env = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv
 
-  // Enforced schema where the model enforces schemas.
-  assert.equal(formatFor('openai/gpt-oss-120b:free', env({})), 'json_schema')
-  // Llama 3.3 accepts response_format but does not enforce a schema; asking it
-  // to enforce one is a 400, so it is asked for a JSON object instead.
-  assert.equal(formatFor('meta-llama/llama-3.3-70b-instruct:free', env({})), 'json_object')
+  // Gemma 4's *free* tier accepts response_format but does not enforce a
+  // schema — the paid tier does. Asking it to enforce one is a 400.
+  assert.equal(formatFor('google/gemma-4-31b-it:free', env({})), 'json_object')
+  assert.equal(formatFor('z-ai/glm-5.2:free', env({})), 'json_schema')
   // Anything unlisted gets the weaker, safer form rather than an assumption.
   assert.equal(formatFor('someone/unknown:free', env({})), 'json_object')
   // And it can be forced when a model turns out to differ.
-  assert.equal(formatFor('openai/gpt-oss-120b:free', env({ LOCK_MODEL_FORMAT: 'none' })), 'none')
+  assert.equal(formatFor('z-ai/glm-5.2:free', env({ LOCK_MODEL_FORMAT: 'none' })), 'none')
+
+  // The catalogue is the authority when it speaks.
+  assert.equal(formatFromParameters(['tools', 'structured_outputs']), 'json_schema')
+  assert.equal(formatFromParameters(['tools', 'response_format']), 'json_object')
+  assert.equal(formatFromParameters(['tools']), 'none')
+  assert.equal(formatFromParameters(undefined), null)
 
   assert.equal((responseFormatFor('json_schema') as any).response_format.type, 'json_schema')
   assert.equal((responseFormatFor('json_schema') as any).response_format.json_schema.strict, true)
@@ -243,20 +270,20 @@ test('one turn is one POST to chat/completions, carrying the key as a bearer tok
     assert.equal(res.status, 200)
     assert.equal((res.body as any).step.decision.commitment, 'Pursue the partnership.')
 
-    assert.equal(g.seen.length, 1, 'one user action must be exactly one provider request')
-    const sent = g.seen[0]
+    const generations = g.seen.filter((r) => r.url.endsWith('/chat/completions'))
+    assert.equal(generations.length, 1, 'one user action must be exactly one generation')
+    const sent = generations[0]
     assert.equal(sent.method, 'POST')
     assert.equal(sent.url, '/api/v1/chat/completions')
     assert.equal(sent.headers.authorization, `Bearer ${KEY}`)
-    assert.equal(sent.body.model, 'openai/gpt-oss-120b:free')
+    assert.equal(sent.body.model, 'google/gemma-4-31b-it:free')
     assert.equal(sent.body.messages[0].role, 'system')
     assert.equal(sent.body.messages[1].role, 'user')
     // Asking for a schema is also what narrows the free router's pool to
     // models that can honour one.
-    assert.equal(sent.body.response_format.type, 'json_schema')
-    assert.equal(sent.body.response_format.json_schema.name, 'lock_turn')
-    assert.equal(sent.body.response_format.json_schema.strict, true)
-    assert.ok(sent.body.response_format.json_schema.schema.properties.step)
+    // Gemma 4 free promises valid JSON, not our shape, so that is what is
+    // asked for — the prompt and the validator carry the rest.
+    assert.equal(sent.body.response_format.type, 'json_object')
   } finally { g.close() }
 })
 
@@ -268,7 +295,8 @@ test('LOCK_MODEL is what gets sent, and the browser never chooses it', async () 
       LOCK_MODEL: 'qwen/qwen3-8b:free',
     } as NodeJS.ProcessEnv)
     await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
-    assert.equal(g.seen[0].body.model, 'qwen/qwen3-8b:free')
+    const gen = g.seen.filter((r) => r.url.endsWith('/chat/completions'))
+    assert.equal(gen[0].body.model, 'qwen/qwen3-8b:free')
   } finally { g.close() }
 })
 
@@ -411,7 +439,10 @@ test('nothing is retried except a short rate limit, and then only once', async (
       OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${broke.url}/api/v1`,
     } as NodeJS.ProcessEnv)
     await handleTurn(START, p)
-    assert.equal(broke.seen.length, 1, 'an empty balance must not be retried')
+    assert.equal(
+      broke.seen.filter((r) => r.url.endsWith('/chat/completions')).length, 1,
+      'an empty balance must not be retried',
+    )
   } finally { broke.close() }
 
   // A long retry-after is not worth waiting out either.
@@ -424,7 +455,10 @@ test('nothing is retried except a short rate limit, and then only once', async (
       OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${later.url}/api/v1`,
     } as NodeJS.ProcessEnv)
     await handleTurn(START, p)
-    assert.equal(later.seen.length, 1, 'a 90s wait must not be sat out')
+    assert.equal(
+      later.seen.filter((r) => r.url.endsWith('/chat/completions')).length, 1,
+      'a 90s wait must not be sat out',
+    )
   } finally { later.close() }
 
   // A one-second one is, exactly once.
@@ -441,7 +475,10 @@ test('nothing is retried except a short rate limit, and then only once', async (
     } as NodeJS.ProcessEnv)
     const res = await handleTurn(START, p)
     assert.equal(res.status, 200)
-    assert.equal(soon.seen.length, 2, 'exactly one retry, never more')
+    assert.equal(
+      soon.seen.filter((r) => r.url.endsWith('/chat/completions')).length, 2,
+      'exactly one retry, never more',
+    )
   } finally { soon.close() }
 })
 
@@ -546,8 +583,8 @@ test('the deployed function reaches OpenRouter under both host signatures', asyn
         const body = await res.json()
         assert.equal(body.step.kind, 'decision')
         assert.equal(body.journey.decisions[0].commitment, 'Pursue the partnership.')
-        assert.equal(g.seen.length, 1, 'the gateway must actually have been called')
-        assert.equal(g.seen[0].url, '/api/v1/chat/completions')
+        const gen = () => g.seen.filter((r) => r.url.endsWith('/chat/completions'))
+        assert.equal(gen().length, 1, 'the gateway must actually have been called')
 
         // The Web signature, same artifact.
         const web: Response = await fn.default(
@@ -560,7 +597,7 @@ test('the deployed function reaches OpenRouter under both host signatures', asyn
         assert.ok(web instanceof Response)
         assert.equal(web.status, 200)
         assert.equal((await web.json()).step.kind, 'decision')
-        assert.equal(g.seen.length, 2)
+        assert.equal(gen().length, 2)
       } finally { h.close(); g.close() }
     },
   )
@@ -571,16 +608,9 @@ test('the deployed probe makes one real generation request and reports what came
     if (r.url.endsWith('/key')) {
       return { status: 200, body: { data: { label: 'lock', is_free_tier: true } } }
     }
-    if (r.url.endsWith('/models')) {
-      return { status: 200, body: { data: [
-        { id: 'openai/gpt-oss-120b:free',
-          supported_parameters: ['response_format', 'structured_outputs'],
-          pricing: { prompt: '0', completion: '0' } },
-      ] } }
-    }
     // A real, validatable turn — the probe now runs the real validator on it.
     return { status: 200, body: {
-      model: 'openai/gpt-oss-120b:free',
+      model: 'google/gemma-4-31b-it:free',
       choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }],
     } }
   })
@@ -598,7 +628,7 @@ test('the deployed probe makes one real generation request and reports what came
 
         assert.equal(json.provider, 'openrouter')
         assert.equal(json.providerKeyVariable, 'OPENROUTER_API_KEY')
-        assert.equal(json.model, 'openai/gpt-oss-120b:free')
+        assert.equal(json.model, 'google/gemma-4-31b-it:free')
         assert.equal(json.env, 'production')
         assert.equal(json.commit, 'abcdef1')
 
@@ -612,21 +642,23 @@ test('the deployed probe makes one real generation request and reports what came
         assert.equal(json.probe.modelAvailable, true)
         assert.equal(json.probe.canGenerate, true)
         assert.equal(json.probe.verdict, 'ok')
-        assert.equal(json.probe.selectedModel, 'openai/gpt-oss-120b:free')
+        assert.equal(json.probe.selectedModel, 'google/gemma-4-31b-it:free')
         // The check that a one-token "ping" could never make.
         assert.equal(json.probe.returnsValidLockJson, true)
         assert.equal(json.probe.supportsResponseFormat, true)
-        assert.equal(json.probe.responseFormat, 'json_schema')
-        assert.equal(json.probe.answeredBy, 'openai/gpt-oss-120b:free')
+        assert.equal(json.probe.responseFormat, 'json_object')
+        assert.equal(json.probe.answeredBy, 'google/gemma-4-31b-it:free')
         assert.deepEqual(json.probe.modelsConfigured,
-          ['openai/gpt-oss-120b:free', 'meta-llama/llama-3.3-70b-instruct:free'])
+          ['google/gemma-4-31b-it:free', 'z-ai/glm-5.2:free'])
+        // And it says where the choice came from, so a stale pin is visible.
+        assert.match(json.probe.resolvedFrom, /catalogue/)
 
         // A real generation request was made, and it was the smallest one.
         const generation = g.seen.filter((s) => s.url.endsWith('/chat/completions'))
         assert.equal(generation.length, 1, 'exactly one generation, no more')
         assert.equal(generation[0].method, 'POST')
         assert.ok(generation[0].body.max_tokens <= 400, 'the probe stays small')
-        assert.equal(generation[0].body.model, 'openai/gpt-oss-120b:free')
+        assert.equal(generation[0].body.model, 'google/gemma-4-31b-it:free')
         assert.equal(generation[0].headers.authorization, `Bearer ${KEY}`)
 
         // Nothing about the key comes back.
@@ -654,18 +686,6 @@ test('the probe keeps each failure distinct, in JSON and on the page', async () 
         return status === 401
           ? { status: 401, body: { error: { code: 401, message } } }
           : { status: 200, body: { data: { label: 'lock' } } }
-      }
-      if (r.url.endsWith('/models')) {
-        return {
-          status: 200,
-          body: { data: [
-            { id: 'openai/gpt-oss-120b:free',
-              supported_parameters: ['response_format', 'structured_outputs'],
-              pricing: { prompt: '0', completion: '0' } },
-            { id: 'qwen/qwen3-8b:free', pricing: { prompt: '0', completion: '0' } },
-            { id: 'openai/gpt-4.1', pricing: { prompt: '0.000002', completion: '0.000008' } },
-          ] },
-        }
       }
       return { status, body: { error: { code: status, type: code, message } } }
     })
@@ -702,7 +722,7 @@ test('the probe keeps each failure distinct, in JSON and on the page', async () 
             // When the key is fine but something else is not, the catalogue
             // is the fix — and only the free slugs are worth offering.
             assert.deepEqual(json.probe.models,
-              ['openai/gpt-oss-120b:free', 'qwen/qwen3-8b:free'])
+              ['google/gemma-4-31b-it:free', 'z-ai/glm-5.2:free'])
           }
           if (verdict === 'model_unavailable') assert.equal(json.probe.modelAvailable, false)
 
@@ -827,27 +847,25 @@ test('the probe and the provider agree on which model is configured', async () =
   // outage stayed invisible for so long.
   const health = await readFile('api/health.ts', 'utf8')
   const provider = await readFile('server/ai/openrouter.ts', 'utf8')
-  for (const model of ['openai/gpt-oss-120b:free', 'meta-llama/llama-3.3-70b-instruct:free']) {
+  for (const model of ['google/gemma-4-31b-it:free', 'z-ai/glm-5.2:free']) {
     assert.ok(health.includes(model), `the probe must know about ${model}`)
     assert.ok(provider.includes(model), `the provider must know about ${model}`)
   }
   assert.ok(health.includes("'json_schema'") && provider.includes("'json_schema'"))
-  // And neither may quietly reintroduce the router.
-  assert.ok(!provider.includes("'openrouter/free'"), 'the router must not come back')
+  // And neither may quietly reintroduce the router as a model.
+  assert.ok(!/'openrouter\/free'/.test(provider), 'the router must not come back')
 
-  const g = await gateway((r) => {
-    if (r.url.endsWith('/key')) return { status: 200, body: { data: { label: 'lock' } } }
-    if (r.url.endsWith('/models')) {
-      return { status: 200, body: { data: [
-        { id: 'qwen/qwen3-8b:free', supported_parameters: ['response_format'],
-          pricing: { prompt: '0', completion: '0' } },
-      ] } }
-    }
-    return { status: 200, body: {
-      model: 'qwen/qwen3-8b:free',
-      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }],
-    } }
-  })
+  const g = await gateway(
+    (r) =>
+      r.url.endsWith('/key')
+        ? { status: 200, body: { data: { label: 'lock' } } }
+        : { status: 200, body: {
+            model: 'qwen/qwen3-8b:free',
+            choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }],
+          } },
+    { data: [{ id: 'qwen/qwen3-8b:free', supported_parameters: ['response_format'],
+               pricing: { prompt: '0', completion: '0' } }] },
+  )
   await withEnv(
     {
       ...CLEAN, OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${g.url}/api/v1`,
@@ -864,6 +882,7 @@ test('the probe and the provider agree on which model is configured', async () =
         // An unlisted model is asked for a JSON object, never a schema.
         assert.equal(json.probe.responseFormat, 'json_object')
         assert.equal(json.probe.returnsValidLockJson, true)
+        assert.equal(json.probe.resolvedFrom, 'LOCK_MODEL')
         const generation = g.seen.filter((s) => s.url.endsWith('/chat/completions'))
         assert.equal(generation.length, 1, 'the probe generates once, never more')
         assert.equal(generation[0].body.model, 'qwen/qwen3-8b:free')
@@ -871,4 +890,128 @@ test('the probe and the provider agree on which model is configured', async () =
       } finally { h.close(); g.close() }
     },
   )
+})
+
+test('the model is chosen from the catalogue the key can actually see', () => {
+  // The exact list a real key returned, including the specialists and the
+  // router that must never be selected.
+  const live = readCatalogue({
+    data: [
+      'minimax/minimax-m2.7:free', 'minimax/minimax-m3:free',
+      'nvidia/nemotron-3-super-120b-a12b:free', 'nvidia/nemotron-3.5-lightning:free',
+      'z-ai/glm-5.2:free', 'google/gemma-4-31b-it:free', 'google/gemma-4-26b-a4b-it:free',
+      'cohere/north-mini-code:free', 'liquid/lfm-2.5-2.6b:free',
+      'poolside/laguna-s-2.1:free', 'poolside/laguna-xs-2.1:free',
+      'thinkingmachines/inkling:free', 'thinkingmachines/inkling-small:free',
+      'openrouter/free',
+    ].map((id) => ({
+      id,
+      pricing: { prompt: '0', completion: '0' },
+      supported_parameters: id === 'z-ai/glm-5.2:free'
+        ? ['response_format', 'structured_outputs']
+        : ['response_format'],
+    })),
+  })
+  assert.equal(live.length, 14)
+  assert.ok(live.every((e) => e.free))
+
+  const chosen = chooseModels(live, {} as NodeJS.ProcessEnv)
+  assert.equal(chosen[0].model, 'google/gemma-4-31b-it:free',
+    'the dense instruction-tuned general model leads')
+  assert.equal(chosen[0].format, 'json_object',
+    'and it is asked for JSON the way its free tier supports')
+  assert.equal(chosen[1].model, 'z-ai/glm-5.2:free')
+  assert.equal(chosen[1].format, 'json_schema',
+    'the catalogue, not a table, decides the format')
+  assert.equal(chosen.length, 2, 'two models, never a longer chain')
+
+  // A router is never a model, and neither is a specialist.
+  assert.ok(!chosen.some((c) => c.model.startsWith('openrouter/')))
+  assert.ok(isSuitableModel('google/gemma-4-31b-it:free'))
+  for (const bad of [
+    'openrouter/free', 'cohere/north-mini-code:free', 'nvidia/llama-3.1-nemoguard-8b-content-safety',
+    'openai/whisper-large', 'someone/text-embedding-3', 'x/safety-classifier',
+  ]) {
+    assert.ok(!isSuitableModel(bad), `${bad} must never be selected`)
+  }
+})
+
+test('a catalogue that offers nothing usable falls back rather than failing', () => {
+  // Paid-only, specialists only, or no JSON support at all.
+  const useless = readCatalogue({
+    data: [
+      { id: 'cohere/north-mini-code:free', pricing: { prompt: '0', completion: '0' },
+        supported_parameters: ['response_format'] },
+      { id: 'someone/paid:model', pricing: { prompt: '0.01', completion: '0.02' },
+        supported_parameters: ['structured_outputs'] },
+      { id: 'someone/plain:free', pricing: { prompt: '0', completion: '0' },
+        supported_parameters: [] },
+    ],
+  })
+  assert.deepEqual(chooseModels(useless, {} as NodeJS.ProcessEnv), [])
+
+  // An unranked but perfectly usable free model is still better than nothing.
+  const unranked = readCatalogue({
+    data: [{ id: 'someone/general-12b:free', pricing: { prompt: '0', completion: '0' },
+             supported_parameters: ['response_format'] }],
+  })
+  assert.deepEqual(chooseModels(unranked, {} as NodeJS.ProcessEnv),
+    [{ model: 'someone/general-12b:free', format: 'json_object' }])
+
+  // Garbage in, no crash out.
+  assert.deepEqual(readCatalogue(null), [])
+  assert.deepEqual(readCatalogue({ data: 'nope' }), [])
+  assert.deepEqual(readCatalogue({ data: [{ nope: true }] }), [])
+})
+
+test('the catalogue is read once per warm instance, not once per turn', async () => {
+  const g = await gateway()
+  try {
+    const provider = createOpenRouterProvider({
+      OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${g.url}/api/v1`,
+    } as NodeJS.ProcessEnv)
+    for (let i = 0; i < 3; i++) {
+      await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+    }
+    const catalogue = g.seen.filter((r) => r.url.endsWith('/models'))
+    const generations = g.seen.filter((r) => r.url.endsWith('/chat/completions'))
+    assert.equal(generations.length, 3, 'one generation per turn')
+    assert.equal(catalogue.length, 1, 'and one catalogue read for all of them')
+  } finally { g.close() }
+})
+
+test('a pinned LOCK_MODEL skips the catalogue entirely', async () => {
+  const g = await gateway()
+  try {
+    const provider = createOpenRouterProvider({
+      OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${g.url}/api/v1`,
+      LOCK_MODEL: 'someone/pinned:free',
+    } as NodeJS.ProcessEnv)
+    await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+    assert.equal(g.seen.filter((r) => r.url.endsWith('/models')).length, 0,
+      'a pin is an instruction, not a suggestion')
+    assert.equal(
+      g.seen.filter((r) => r.url.endsWith('/chat/completions'))[0].body.model,
+      'someone/pinned:free',
+    )
+  } finally { g.close() }
+})
+
+test('an unreachable catalogue still produces a turn', async () => {
+  // The catalogue endpoint fails; the built-in preference order carries it.
+  const g = await gateway(
+    () => ({ status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }] } }),
+    { error: 'nope' },
+  )
+  try {
+    const provider = createOpenRouterProvider({
+      OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${g.url}/api/v1`,
+    } as NodeJS.ProcessEnv)
+    const out = await provider({ brief: 'b', instruction: 'i' }, new AbortController().signal)
+    assert.ok(out, 'a catalogue we cannot read is not a reason to fail the turn')
+    assert.equal(
+      g.seen.filter((r) => r.url.endsWith('/chat/completions'))[0].body.model,
+      'google/gemma-4-31b-it:free',
+    )
+  } finally { g.close() }
 })

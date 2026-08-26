@@ -22,43 +22,76 @@ import {
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'
 
 /**
- * Concrete free chat models, in preference order. Deliberately not a router.
+ * Free chat models worth Lock's turns, best first.
  *
- * `openrouter/free` was the default here and it is what broke production. It
- * selects at random from everything free, and everything free includes models
- * that are not chat models at all: one real journey was routed to an NVIDIA
- * NemoGuard content-safety classifier, which answered `User Safety: safe` —
- * its job — and nothing downstream could turn that into a decision. A router
- * cannot promise instruction-following, so it is not something to build on.
+ * This is a preference, not a bet. The catalogue a key can see differs between
+ * accounts and changes over time — a hardcoded default already broke
+ * production twice, once as a router that picked a content-safety classifier
+ * and once as a slug the key could not see at all. So the list is ranked here
+ * and *resolved against the key's own catalogue* at runtime.
  *
- * First choice enforces a JSON schema natively. Second is a fallback for when
- * the first is unreachable or answers with something unusable.
+ * Ranked for what a decision turn actually needs: instruction-following over
+ * raw capability, a short answer over a long one, and a general model rather
+ * than a specialist.
  */
-const CANDIDATE_MODELS = [
-  'openai/gpt-oss-120b:free',
-  'meta-llama/llama-3.3-70b-instruct:free',
+const PREFERRED_MODELS = [
+  // Dense, instruction-tuned, general. Fast, and not reasoning-first — which
+  // matters when every turn is one short interactive step.
+  'google/gemma-4-31b-it:free',
+  // Enforces a JSON schema server-side, so shape is guaranteed rather than
+  // validated after the fact. Reasoning-heavy, hence second: excellent
+  // insurance, poor default for a latency-sensitive turn.
+  'z-ai/glm-5.2:free',
+  // Same family as the first choice, fewer active parameters.
+  'google/gemma-4-26b-a4b-it:free',
+  'minimax/minimax-m2.7:free',
+  'minimax/minimax-m3:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
 ]
 
 /**
- * How a model wants to be asked for JSON.
+ * Models that answer a different question than the one Lock asks.
  *
- * `json_schema` is enforcement: the model cannot emit anything else.
- * `json_object` only promises valid JSON, not our shape — the prompt and the
- * validator carry the rest. Sending `json_schema` to a model that does not
- * enforce it is a 400, so the default for anything unlisted is the weaker,
- * safer form rather than an assumption.
+ * A content-safety classifier is why this exists: it answered `User Safety:
+ * safe` to a real journey, correctly, because that is its job. Coding,
+ * embedding, audio and image models are the same mistake in other clothes.
  */
+const UNSUITABLE = /(^|[/-])(code|coder|codestral|guard|safety|nemoguard|moderat|whisper|audio|tts|voice|embed|rerank|vision|ocr|image|diffusion|sd\d)/i
+
+/** A router is never a model. Requirement, and the cause of the first outage. */
+const IS_ROUTER = /^openrouter\//
+
+export function isSuitableModel(id: string): boolean {
+  return !IS_ROUTER.test(id) && !UNSUITABLE.test(id)
+}
+
 export type ResponseFormat = 'json_schema' | 'json_object' | 'none'
 
-const MODEL_FORMAT: Record<string, ResponseFormat> = {
-  'openai/gpt-oss-120b:free': 'json_schema',
-  'meta-llama/llama-3.3-70b-instruct:free': 'json_object',
+/**
+ * What each model is known to accept, when the catalogue cannot say.
+ *
+ * The free tier of a model is not always the paid tier: Gemma 4 31B enforces
+ * a JSON schema when paid and only promises valid JSON when free. Guessing
+ * upward is a 400 on every request, so anything unknown gets the weaker form.
+ */
+const KNOWN_FORMAT: Record<string, ResponseFormat> = {
+  'google/gemma-4-31b-it:free': 'json_object',
+  'google/gemma-4-26b-a4b-it:free': 'json_object',
+  'z-ai/glm-5.2:free': 'json_schema',
+}
+
+/** What the catalogue says a model accepts, read from `supported_parameters`. */
+export function formatFromParameters(params: unknown): ResponseFormat | null {
+  if (!Array.isArray(params)) return null
+  if (params.includes('structured_outputs')) return 'json_schema'
+  if (params.includes('response_format')) return 'json_object'
+  return 'none'
 }
 
 export function formatFor(model: string, env: NodeJS.ProcessEnv = process.env): ResponseFormat {
   const forced = (env.LOCK_MODEL_FORMAT ?? '').trim().toLowerCase()
   if (forced === 'json_schema' || forced === 'json_object' || forced === 'none') return forced
-  return MODEL_FORMAT[model] ?? 'json_object'
+  return KNOWN_FORMAT[model] ?? 'json_object'
 }
 
 /**
@@ -71,7 +104,117 @@ export function openRouterModels(env: NodeJS.ProcessEnv = process.env): string[]
   const pinned = (env.LOCK_MODEL ?? '').trim()
   const fallback = (env.LOCK_MODEL_FALLBACK ?? '').trim()
   if (pinned) return fallback && fallback !== pinned ? [pinned, fallback] : [pinned]
-  return fallback ? [fallback, ...CANDIDATE_MODELS.filter((m) => m !== fallback)] : [...CANDIDATE_MODELS]
+  const ranked = PREFERRED_MODELS.filter(isSuitableModel)
+  return fallback ? [fallback, ...ranked.filter((m) => m !== fallback)] : ranked
+}
+
+/* ---- resolving against the key's own catalogue ------------------------- */
+
+export interface CatalogueEntry {
+  id: string
+  free: boolean
+  format: ResponseFormat | null
+}
+
+/** One `/models` payload, reduced to what model choice depends on. */
+export function readCatalogue(payload: unknown): CatalogueEntry[] {
+  const data = (payload as { data?: unknown })?.data
+  if (!Array.isArray(data)) return []
+  return data
+    .map((raw) => {
+      const m = raw as { id?: unknown; pricing?: { prompt?: unknown; completion?: unknown }
+                         supported_parameters?: unknown }
+      if (typeof m?.id !== 'string' || !m.id) return null
+      const free =
+        Number(m.pricing?.prompt ?? 1) === 0 && Number(m.pricing?.completion ?? 1) === 0
+      return { id: m.id, free, format: formatFromParameters(m.supported_parameters) }
+    })
+    .filter((e): e is CatalogueEntry => e !== null)
+}
+
+/**
+ * Picks the model to use, given what this key can actually see.
+ *
+ * Preference order first. If none of the preferred models are in the
+ * catalogue, any free general model that can be asked for JSON will do —
+ * which is still a far better answer than failing with a slug nobody has.
+ */
+export function chooseModels(
+  catalogue: CatalogueEntry[],
+  env: NodeJS.ProcessEnv = process.env,
+): Array<{ model: string; format: ResponseFormat }> {
+  const usable = new Map(
+    catalogue
+      .filter((e) => e.free && isSuitableModel(e.id) && e.format !== 'none')
+      .map((e) => [e.id, e] as const),
+  )
+
+  const withFormat = (id: string) => {
+    const forced = (env.LOCK_MODEL_FORMAT ?? '').trim().toLowerCase()
+    if (forced === 'json_schema' || forced === 'json_object' || forced === 'none') {
+      return { model: id, format: forced as ResponseFormat }
+    }
+    // The catalogue is the authority; the table is only a fallback for a
+    // catalogue that does not carry `supported_parameters`.
+    return { model: id, format: usable.get(id)?.format ?? formatFor(id, env) }
+  }
+
+  const ranked = PREFERRED_MODELS.filter((id) => usable.has(id))
+  const rest = [...usable.keys()].filter((id) => !PREFERRED_MODELS.includes(id)).sort()
+  const order = [...ranked, ...rest]
+  return order.slice(0, 2).map(withFormat)
+}
+
+/* One catalogue read per warm function instance, not per turn. */
+const CATALOGUE_TTL_MS = 10 * 60_000
+let cachedCatalogue: { at: number; entries: CatalogueEntry[] } | null = null
+
+/** Exposed so tests do not inherit each other's cache. */
+export function forgetCatalogue(): void {
+  cachedCatalogue = null
+}
+
+async function catalogueFor(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  signal: AbortSignal,
+): Promise<CatalogueEntry[]> {
+  const now = Date.now()
+  if (cachedCatalogue && now - cachedCatalogue.at < CATALOGUE_TTL_MS) return cachedCatalogue.entries
+  try {
+    const res = await fetch(`${openRouterBaseUrl(env)}/models`, {
+      headers: { authorization: `Bearer ${key}` },
+      signal,
+    })
+    if (!res.ok) return []
+    const entries = readCatalogue(await res.json())
+    if (entries.length) cachedCatalogue = { at: now, entries }
+    return entries
+  } catch {
+    // A catalogue we cannot read is not a reason to fail the turn.
+    return []
+  }
+}
+
+/**
+ * The models this turn will try, resolved against the live catalogue.
+ *
+ * Costs one free request per cold start, and nothing after that. A pinned
+ * `LOCK_MODEL` skips it entirely, and so does a catalogue that cannot be read
+ * — in both cases the static preference order is used.
+ */
+export async function resolveModels(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  signal: AbortSignal,
+): Promise<Array<{ model: string; format: ResponseFormat }>> {
+  const pinned = (env.LOCK_MODEL ?? '').trim()
+  if (pinned) {
+    return openRouterModels(env).map((m) => ({ model: m, format: formatFor(m, env) }))
+  }
+  const chosen = chooseModels(await catalogueFor(env, key, signal), env)
+  if (chosen.length) return chosen
+  return openRouterModels(env).map((m) => ({ model: m, format: formatFor(m, env) }))
 }
 
 /**
@@ -210,13 +353,18 @@ function anotherModelCouldHelp(err: unknown): boolean {
  * whole chain.
  */
 export function createOpenRouterProvider(env: NodeJS.ProcessEnv = process.env): Provider {
-  const models = openRouterModels(env)
   return async (req, signal) => {
+    const key = (env.OPENROUTER_API_KEY ?? '').trim()
+    if (!key) {
+      throw new ProviderError('OPENROUTER_API_KEY is not configured', 'unconfigured')
+    }
+
+    const models = await resolveModels(env, key, signal)
     let last: unknown
     for (let i = 0; i < models.length; i++) {
-      const model = models[i]
+      const { model, format } = models[i]
       try {
-        return await withRetry((r, s) => attempt(env, model, r, s))(req, signal)
+        return await withRetry((r, s) => attempt(env, key, model, format, r, s))(req, signal)
       } catch (err) {
         last = err
         const more = i < models.length - 1
@@ -224,7 +372,7 @@ export function createOpenRouterProvider(env: NodeJS.ProcessEnv = process.env): 
         console.warn(
           `[lock] ${model} produced nothing usable (${
             err instanceof Error ? err.message.slice(0, 140) : String(err)
-          }); trying ${models[i + 1]}`,
+          }); trying ${models[i + 1].model}`,
         )
       }
     }
@@ -234,15 +382,12 @@ export function createOpenRouterProvider(env: NodeJS.ProcessEnv = process.env): 
 
 async function attempt(
   env: NodeJS.ProcessEnv,
+  key: string,
   model: string,
+  format: ResponseFormat,
   req: ProviderRequest,
   signal: AbortSignal,
 ): Promise<unknown> {
-  const key = (env.OPENROUTER_API_KEY ?? '').trim()
-  if (!key) {
-    throw new ProviderError('OPENROUTER_API_KEY is not configured', 'unconfigured')
-  }
-
   /* One try around the *whole* exchange, not just the fetch.
      A slow model returns its headers early and then streams; an abort landing
      during the body read used to escape as a bare DOMException, which is what
@@ -267,13 +412,14 @@ async function attempt(
         ],
         // Deliberately low: Lock should be consistent, not creative.
         temperature: 0.35,
-        // The schema is large, and a free model may spend part of the budget
-        // reasoning before it writes anything. Too low a cap truncates the
-        // JSON mid-object and the turn is discarded as unparseable.
-        max_tokens: 2048,
+        // The schema is large, and several of these models think before they
+        // write — reasoning tokens are charged against this same budget. Too
+        // low a cap truncates the JSON mid-object and the turn is discarded as
+        // unparseable. Unused budget on a free model costs nothing.
+        max_tokens: 4096,
         // Only ever the form this model actually supports. Asking a model
         // that cannot enforce a schema to enforce one is a 400.
-        ...responseFormatFor(formatFor(model, env)),
+        ...responseFormatFor(format),
       }),
     })
 
@@ -307,7 +453,7 @@ async function attempt(
     }
 
     console.log(
-      `[lock] openrouter ok in ${Date.now() - started}ms · asked ${model} · answered ${
+      `[lock] openrouter ok in ${Date.now() - started}ms · asked ${model} (${format}) · answered ${
         typeof payload.model === 'string' ? payload.model : 'unknown'
       }`,
     )

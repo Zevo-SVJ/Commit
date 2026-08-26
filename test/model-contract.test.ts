@@ -6,8 +6,19 @@ import { handleTurn } from '../server/handler.js'
 import {
   createOpenRouterProvider,
   extractOpenRouterJson,
+  forgetCatalogue,
   safetyVerdict,
 } from '../server/ai/openrouter.js'
+
+/** What the key can see, in the shape OpenRouter returns it. */
+const CATALOGUE = JSON.stringify({
+  data: [
+    { id: 'google/gemma-4-31b-it:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format'] },
+    { id: 'z-ai/glm-5.2:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format', 'structured_outputs'] },
+  ],
+})
 import { InvalidModelOutput } from '../server/ai/schema.js'
 
 /**
@@ -61,8 +72,15 @@ type Reply = { status: number; body: unknown } | { status: number; text: string 
 /** Records which model each request asked for, so fallback order is provable. */
 function gateway(reply: (n: number, model: string) => Reply) {
   const asked: string[] = []
+  forgetCatalogue()
   return new Promise<{ url: string; close: () => void; asked: string[] }>((resolve) => {
     const s: Server = createServer((req, res) => {
+      if ((req.url ?? '').endsWith('/models')) {
+        req.resume()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(CATALOGUE)
+        return
+      }
       const chunks: Buffer[] = []
       req.on('data', (c) => chunks.push(c as Buffer))
       req.on('end', () => {
@@ -153,7 +171,8 @@ test('the production response never becomes a decision, and costs at most two mo
     // Bounded: the primary, then one fallback. Never a third.
     assert.equal(g.asked.length, 2, 'exactly one fallback')
     assert.notEqual(g.asked[0], g.asked[1], 'and it is a different model')
-    assert.equal(g.asked[0], 'openai/gpt-oss-120b:free')
+    assert.equal(g.asked[0], 'google/gemma-4-31b-it:free')
+    assert.equal(g.asked[1], 'z-ai/glm-5.2:free')
   } finally { g.close() }
 })
 

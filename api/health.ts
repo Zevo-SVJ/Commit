@@ -37,9 +37,16 @@ const ROUTER = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1
   .replace(/\/+$/, '')
 /* Kept in step with server/ai/openrouter.ts and server/ai/factory.ts by the
    tests in test/openrouter.test.ts, which read both and compare. */
-/* Mirrors CANDIDATE_MODELS in server/ai/openrouter.ts. Kept in step by a test
+/* Mirrors PREFERRED_MODELS in server/ai/openrouter.ts. Kept in step by a test
    that reads both files and compares. */
-const ROUTER_CANDIDATES = ['openai/gpt-oss-120b:free', 'meta-llama/llama-3.3-70b-instruct:free']
+const ROUTER_CANDIDATES = [
+  'google/gemma-4-31b-it:free',
+  'z-ai/glm-5.2:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'minimax/minimax-m2.7:free',
+  'minimax/minimax-m3:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+]
 
 function routerModels(): string[] {
   const pinned = (process.env.LOCK_MODEL ?? '').trim()
@@ -126,6 +133,8 @@ type Probe = {
   returnsValidLockJson?: boolean | null
   /** Why the contract check failed, when it did. */
   contractError?: string | null
+  /** Where the model choice came from: a pin, the catalogue, or the built-in order. */
+  resolvedFrom?: string
   /** The provider's own words on the failing call, scrubbed. */
   upstream?: { status: number; code: string | null; message: string; url: string } | null
   /** Which credential transport was used. */
@@ -361,8 +370,9 @@ async function checkQuota(key: string): Promise<Partial<Probe>> {
 /* Mirrors MODEL_FORMAT in server/ai/openrouter.ts; a test reads both and
    compares, so they cannot drift apart unnoticed. */
 const ROUTER_FORMATS: Record<string, string> = {
-  'openai/gpt-oss-120b:free': 'json_schema',
-  'meta-llama/llama-3.3-70b-instruct:free': 'json_object',
+  'google/gemma-4-31b-it:free': 'json_object',
+  'google/gemma-4-26b-a4b-it:free': 'json_object',
+  'z-ai/glm-5.2:free': 'json_schema',
 }
 
 function routerFormat(model: string): string {
@@ -410,36 +420,34 @@ async function checkRouterKey(key: string): Promise<Partial<Probe>> {
 }
 
 /**
- * Free, and it costs no tokens: the catalogue says which parameters a model
- * accepts. This is the cheap half of "is this model compatible" — it settles
- * reachability and response_format support without generating anything.
+ * Free, and it costs no tokens: the catalogue settles which models this key
+ * can actually see, and which of them accept a response_format at all.
+ *
+ * The probe resolves exactly the way the provider does — same ranking, same
+ * catalogue — so what it reports is what a real turn will use. Reporting a
+ * statically-guessed model here is how the last two outages stayed invisible.
  */
-async function checkRouterModel(key: string, model: string): Promise<Partial<Probe>> {
+async function resolveFromCatalogue(key: string): Promise<{
+  models: Array<{ model: string; format: string }>
+  free: string[]
+  known: boolean
+}> {
   try {
     const res = await fetch(`${ROUTER}/models`, {
       headers: { authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(8000),
     })
-    if (!res.ok) return {}
-    const data = (await res.json()) as {
-      data?: Array<{ id?: string; supported_parameters?: string[] }>
+    if (!res.ok) return { models: [], free: [], known: false }
+    const { chooseModels, readCatalogue } = await import('../server/ai/openrouter.js')
+    const entries = readCatalogue(await res.json())
+    if (!entries.length) return { models: [], free: [], known: false }
+    return {
+      models: chooseModels(entries) as Array<{ model: string; format: string }>,
+      free: entries.filter((e) => e.free).map((e) => e.id).sort().slice(0, 60),
+      known: true,
     }
-    const listed = (data.data ?? []).find((m) => m.id === model)
-    if (!listed) {
-      return {
-        modelAvailable: false, verdict: 'model_unavailable', supportsResponseFormat: null,
-        advice: `"${model}" is not in the catalogue this key can see. Set LOCK_MODEL to one of the free models listed below.`,
-      }
-    }
-    const params = listed.supported_parameters
-    // An older catalogue may not carry the field at all; absent is unknown,
-    // not unsupported.
-    const supports = Array.isArray(params)
-      ? params.includes('response_format') || params.includes('structured_outputs')
-      : null
-    return { modelAvailable: true, supportsResponseFormat: supports }
   } catch {
-    return {}
+    return { models: [], free: [], known: false }
   }
 }
 
@@ -452,9 +460,12 @@ async function checkRouterModel(key: string, model: string): Promise<Partial<Pro
  * could never work. This sends the real contract and runs the real validator,
  * so a green probe means a real turn parses.
  */
-async function checkRouterContract(key: string, model: string): Promise<Partial<Probe>> {
+async function checkRouterContract(
+  key: string,
+  model: string,
+  format: string,
+): Promise<Partial<Probe>> {
   const url = `${ROUTER}/chat/completions`
-  const format = routerFormat(model)
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -599,6 +610,7 @@ function renderHtml(body: any): string {
         row('Returns valid Lock JSON', body.probe.returnsValidLockJson),
         row('Answered by', body.probe.answeredBy),
         row('Fallback model', (body.probe.modelsConfigured ?? [])[1] ?? null),
+        row('Chosen from', body.probe.resolvedFrom),
         row('Provider code', body.probe.providerCode),
       ].join('')
     : `<p class="hint">Add <code>?probe=1</code> to test the key against the provider.</p>`
@@ -752,25 +764,48 @@ export default async function handler(req: any, b?: any) {
        Each is skipped once an earlier one has settled the verdict, so a
        rejected key never pays for a generation it cannot make. */
     const credential = await checkRouterKey(key)
-    const capability =
-      credential.keyAccepted === false ? {} : await checkRouterModel(key, MODEL)
+    const resolved = credential.keyAccepted === false
+      ? { models: [], free: [] as string[], known: false }
+      : await resolveFromCatalogue(key)
+
+    /* Whatever the catalogue said, a pin always wins — same rule as the
+       provider. With no pin and no readable catalogue, the static preference
+       order is used, and the probe says so. */
+    const pinned = (process.env.LOCK_MODEL ?? '').trim()
+    const chain = pinned || !resolved.models.length
+      ? routerModels().map((m) => ({ model: m, format: routerFormat(m) }))
+      : resolved.models
+    const model = chain[0]?.model ?? MODEL
+
+    const capability: Partial<Probe> =
+      credential.keyAccepted === false
+        ? {}
+        : resolved.known && !resolved.free.includes(model)
+          ? {
+              modelAvailable: false, verdict: 'model_unavailable', supportsResponseFormat: null,
+              advice: `"${model}" is not among the free models this key can see. The ones it can are listed below — set LOCK_MODEL to one of them.`,
+            }
+          : { modelAvailable: resolved.known ? true : null,
+              supportsResponseFormat: resolved.known ? chain[0]?.format !== 'none' : null }
+
     const contract =
       credential.keyAccepted === false || capability.modelAvailable === false
         ? {}
-        : await checkRouterContract(key, MODEL)
+        : await checkRouterContract(key, model, chain[0]?.format ?? routerFormat(model))
 
     const merged = { ...credential, ...capability, ...contract }
     // The catalogue is free, but it is only the fix when something is broken.
     const models =
       merged.verdict && merged.verdict !== 'ok' && merged.keyAccepted !== false
-        ? { models: await routerFreeModels(key) }
+        ? { models: resolved.free.length ? resolved.free : await routerFreeModels(key) }
         : {}
     probe = {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
       verdict: 'unknown', providerCode: null, advice: null, link: null,
-      selectedModel: MODEL,
-      modelsConfigured: routerModels(),
-      responseFormat: routerFormat(MODEL),
+      selectedModel: model,
+      modelsConfigured: chain.map((c) => c.model),
+      responseFormat: chain[0]?.format ?? routerFormat(model),
+      resolvedFrom: pinned ? 'LOCK_MODEL' : resolved.models.length ? 'the key\u2019s catalogue' : 'the built-in preference order',
       ...merged, ...models,
     }
   } else if (wantsProbe && key) {
@@ -810,7 +845,10 @@ export default async function handler(req: any, b?: any) {
     providerKeyVariable: KEY_VAR,
     credentials,
     configVars,
-    model: MODEL,
+    // The resolved model when the probe ran, the static first choice otherwise.
+    // Reporting the guess next to a different resolved value is how a
+    // diagnostic starts describing a deployment that does not exist.
+    model: probe?.selectedModel ?? MODEL,
     baseUrlOverridden: Boolean(
       IS_GEMINI
         ? process.env.GEMINI_BASE_URL

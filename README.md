@@ -50,7 +50,7 @@ Lock talks to **OpenRouter**. One variable is required.
 | Variable | Notes |
 | --- | --- |
 | `OPENROUTER_API_KEY` | **Required.** Server-side only. |
-| `LOCK_MODEL` | Optional. Pins one model. Defaults to `openai/gpt-oss-120b:free`. |
+| `LOCK_MODEL` | Optional. Pins one model and skips catalogue resolution. |
 | `LOCK_MODEL_FALLBACK` | Optional. Tried only when the first model returns nothing usable. |
 | `LOCK_MODEL_FORMAT` | Optional. `json_schema` \| `json_object` \| `none`. Overrides the per-model default. |
 | `LOCK_SITE_URL` / `LOCK_SITE_NAME` | Optional OpenRouter attribution headers. |
@@ -67,28 +67,42 @@ reported as `OPENROUTER_API_KEY is not configured`.
 
 ### Which model
 
-Two concrete free models, tried in order:
+The model is **resolved at runtime from the catalogue your key can actually
+see**, not hardcoded. A hardcoded default broke production twice: once as
+`openrouter/free`, a router that selected an NVIDIA NemoGuard content-safety
+classifier which answered `User Safety: safe` — correctly, for what it is —
+and once as a slug the key could not see at all.
 
-1. `openai/gpt-oss-120b:free` — enforces a JSON schema natively.
-2. `meta-llama/llama-3.3-70b-instruct:free` — accepts `response_format` but
-   does not enforce a schema, so it is asked for a JSON object and the
-   validator carries the rest.
+On the first turn after a cold start, Lock reads `GET /models` (free), keeps
+only models that are free, general-purpose and can be asked for JSON, and picks
+the best two by this preference order:
 
-**Not `openrouter/free`.** That router selects at random from everything free,
-and everything free includes models that are not chat models: a live journey
-was routed to an NVIDIA NemoGuard content-safety classifier, which answered
-`User Safety: safe` — correctly, for what it is — and no amount of parsing
-turns that into a decision. A router cannot promise instruction-following.
+1. `google/gemma-4-31b-it:free` — dense, instruction-tuned, general, fast
+2. `z-ai/glm-5.2:free` — enforces a JSON schema server-side
+3. `google/gemma-4-26b-a4b-it:free`
+4. `minimax/minimax-m2.7:free`, `minimax/minimax-m3:free`
+5. `nvidia/nemotron-3-super-120b-a12b:free`
 
-The second model is tried only when the first produced nothing usable at all
-(a safety verdict, prose, a truncated object, a refused request shape). It is
+Routers, and coding / safety / embedding / audio / vision models, are excluded
+by name — they answer a different question than the one Lock asks. If none of
+the preferred models are present, any free general model that accepts a
+`response_format` is used rather than failing.
+
+The catalogue also decides **how** to ask for JSON: `structured_outputs` in a
+model's `supported_parameters` means a strict schema, `response_format` alone
+means a JSON object with the validator carrying the shape. Free tiers differ
+from paid ones here — Gemma 4 31B enforces a schema when paid and only promises
+valid JSON when free — so guessing upward is a 400 on every request.
+
+One catalogue read per warm function instance, not per turn. `LOCK_MODEL` pins
+a model and skips resolution entirely.
+
+The second model is tried only when the first produced nothing usable at all (a
+safety verdict, prose, a truncated object, a refused request shape). It is
 never tried after a rate limit, an empty balance, a rejected key, a timeout or
 a cancellation, because those would fail identically anywhere. One user action
-therefore costs one generation, or two in the worst case — never a duplicated
-decision, because the first produced none.
-
-`/probe?probe=1` reports which models this key can actually reach and whether
-the configured one returns a turn Lock can validate.
+costs one generation, or two in the worst case — never a duplicated decision,
+because the first produced none.
 
 CI fails the build if any key or key name reaches the client
 bundle.

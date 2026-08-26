@@ -15,6 +15,7 @@ import {
   providerFailure,
   isAbortError,
 } from '../server/ai/provider.js'
+import { forgetCatalogue } from '../server/ai/openrouter.js'
 import { PROVIDER_TIMEOUT_MS, CLIENT_TIMEOUT_MS, FUNCTION_MAX_DURATION_S } from '../shared/timeouts.js'
 
 /**
@@ -27,6 +28,16 @@ import { PROVIDER_TIMEOUT_MS, CLIENT_TIMEOUT_MS, FUNCTION_MAX_DURATION_S } from 
  */
 
 const KEY = 'sk-or-v1-' + 'a1b2c3d4'.repeat(8)
+
+/** What the key can see, in the shape OpenRouter returns it. */
+const CATALOGUE = JSON.stringify({
+  data: [
+    { id: 'google/gemma-4-31b-it:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format'] },
+    { id: 'z-ai/glm-5.2:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format', 'structured_outputs'] },
+  ],
+})
 
 const TURN = {
   title: 'The Halden partnership',
@@ -67,8 +78,16 @@ type Behaviour =
 function gateway(behaviour: Behaviour | ((n: number) => Behaviour)) {
   let calls = 0
   const pick = typeof behaviour === 'function' ? behaviour : () => behaviour
+  forgetCatalogue()
   return new Promise<{ url: string; close: () => void; calls: () => number }>((resolve) => {
     const s: Server = createServer((req, res) => {
+      // The catalogue is free and is not a generation, so it is not counted.
+      if ((req.url ?? '').endsWith('/models')) {
+        req.resume()
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(CATALOGUE)
+        return
+      }
       const n = ++calls
       req.resume()
       req.on('end', async () => {
