@@ -50,7 +50,7 @@ createServer((req, res) => {
   createReadStream(file).pipe(res)
 }).listen(PORT, () => {
   console.log(`Lock on http://localhost:${PORT}`)
-  if (!process.env.OPENAI_API_KEY) {
-    console.warn('OPENAI_API_KEY is not set — the app will load but cannot reason.')
+  if (!process.env.OPENROUTER_API_KEY && !process.env.LOCK_PROVIDER) {
+    console.warn('OPENROUTER_API_KEY is not configured — the app will load but cannot reason.')
   }
 })

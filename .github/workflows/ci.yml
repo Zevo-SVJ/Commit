@@ -34,7 +34,7 @@ jobs:
       - name: No secret may reach the browser bundle
         run: |
           set -euo pipefail
-          if grep -rqE 'sk-[A-Za-z0-9_-]{16,}|OPENAI_API_KEY' dist/; then
+          if grep -rqE 'sk-(or-v[0-9]-)?[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{16,}|OPENROUTER_API_KEY|OPENAI_API_KEY|GEMINI_API_KEY' dist/; then
             echo "::error::a key or key name is present in the client bundle"
             exit 1
           fi

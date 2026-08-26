@@ -15,7 +15,7 @@ It is a web app. Not a chatbot, and not a native app.
 Lock needs one secret. It is read on the server only.
 
 ```bash
-cp .env.example .env      # add your OPENAI_API_KEY
+cp .env.example .env      # add your OPENROUTER_API_KEY
 npm install
 npm run dev               # http://localhost:5173 — API included
 ```
@@ -40,24 +40,38 @@ do.
 
 - **Vercel** — zero config. Import this repo at
   [vercel.com/new](https://vercel.com/new/import?s=https%3A%2F%2Fgithub.com%2FZevo-SVJ%2FCommit),
-  set `OPENAI_API_KEY` when prompted, deploy. `vercel.json` and
+  set `OPENROUTER_API_KEY` when prompted, deploy. `vercel.json` and
   `api/decision.ts` are already in place, and every later push redeploys.
 - **Anything else** — `npm run build && npm start` serves the client and the
   API together on `PORT` (default 3000).
 
-Lock talks to one provider, chosen by configuration. Set **either** key.
+Lock talks to **OpenRouter**. One variable is required.
 
 | Variable | Notes |
 | --- | --- |
-| `GEMINI_API_KEY` | Google Gemini. Has a free tier. Server-side only. |
-| `GEMINI_MODEL` | Defaults to `gemini-2.5-flash`. `/probe` lists what your key can use. |
-| `OPENAI_API_KEY` | OpenAI. Server-side only. |
-| `LOCK_MODEL` | OpenAI model. Defaults to `gpt-4.1`. |
-| `LOCK_PROVIDER` | `openai` or `gemini`. Overrides the choice below. |
-| `OPENAI_BASE_URL` / `GEMINI_BASE_URL` | Gateway or regional endpoints. |
+| `OPENROUTER_API_KEY` | **Required.** Server-side only. |
+| `LOCK_MODEL` | Optional. Defaults to `openrouter/free`. |
+| `LOCK_SITE_URL` / `LOCK_SITE_NAME` | Optional OpenRouter attribution headers. |
+| `OPENROUTER_BASE_URL` | Optional. Gateway or regional endpoint. |
+| `LOCK_PROVIDER` | `openrouter` (default), or `openai` / `gemini` to opt into a legacy provider. |
+| `OPENAI_API_KEY` · `OPENAI_MODEL` | Only read when `LOCK_PROVIDER=openai`. |
+| `GEMINI_API_KEY` · `GEMINI_MODEL` | Only read when `LOCK_PROVIDER=gemini`. |
 
-Whichever key is present decides, Gemini first, so adding `GEMINI_API_KEY` is
-enough to switch. CI fails the build if any key or key name reaches the client
+The provider is **not** chosen by which key happens to be set. A key left over
+from a previous provider does not change who answers, and a missing
+`OPENROUTER_API_KEY` does not quietly become someone else's turn — it is
+reported as `OPENROUTER_API_KEY is not configured`.
+
+### Which model
+
+`openrouter/free` is OpenRouter's router over its free models. It only ever
+selects models that cost nothing, and it narrows that pool to models that
+support the features a request uses — for Lock, structured outputs. The trade
+is that the model varies between requests; set `LOCK_MODEL` to a specific slug
+to pin one. `/probe?probe=1` lists the free slugs your key can actually reach,
+so the key is the source of truth rather than a list in this file.
+
+CI fails the build if any key or key name reaches the client
 bundle.
 
 ### Adding a provider
@@ -95,16 +109,21 @@ commit that is live. If `/api/health` answers and `/api/decision` does not, the
 fault is in the decision function's module graph rather than in routing.
 
 **Environment variables only apply to deployments made after they were added.**
-Adding `OPENAI_API_KEY` to an existing project does nothing until you redeploy —
+Adding `OPENROUTER_API_KEY` to an existing project does nothing until you redeploy —
 `key.present: false` on a live `/api/health` is that, almost every time.
 
 The error screen carries a Details line naming where the request broke: the
 status, whether a web page came back instead of JSON, and the failing stage. It
 contains no key and no journey content.
 
-Add `?probe=1` and it also asks the provider two questions — is this key
-accepted, and does this account have credit — reporting the answers as a
-verdict with advice. It costs a handful of tokens and never reports the key.
+Add `?probe=1` and it also asks OpenRouter directly: it reads the key's own
+metadata (free), and then makes one real generation request capped at a single
+token. That is the only thing that separates a deployment that works from one
+that will fail on the first decision. It reports the provider, the selected
+model, whether the key was accepted, whether the model was reachable, whether
+it could generate, the HTTP status, OpenRouter's own error code and its message
+scrubbed of anything key-shaped — and when something is wrong, the free models
+the key could use instead. It never reports the key.
 
 | What you see | What it means |
 | --- | --- |
@@ -113,9 +132,9 @@ verdict with advice. It costs a handful of tokens and never reports the key.
 | `server_boot` | the function ran but could not load its own modules |
 | `unconfigured` | no key reached the runtime — redeploy after adding it |
 | `auth` | a key was sent and the provider rejected it |
-| `quota` | HTTP 429 because the account has no credit. **Waiting will not help** — add credit |
+| `quota` | HTTP 402, or a 429 naming a daily allowance. **Waiting will not help** — add credit, or pick a free model |
 | `rate_limited` | HTTP 429 from a real per-minute limit. This one does clear |
-| `model_unavailable` | the account cannot use `LOCK_MODEL` |
+| `model_unavailable` | the key cannot reach `LOCK_MODEL` — `/probe?probe=1` lists what it can |
 | `model_request_rejected` | the provider refused the request itself |
 | `upstream` | the provider failed; the reason is in the function logs |
 | `invalid_response` | the model answered, but not with a usable turn |

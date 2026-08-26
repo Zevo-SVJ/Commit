@@ -232,15 +232,23 @@ test('a missing Gemini key never reaches the network', async () => {
 
 test('the provider is chosen by configuration alone', () => {
   const env = (o: Record<string, string>) => o as unknown as NodeJS.ProcessEnv
-  assert.equal(selectProviderName(env({ GEMINI_API_KEY: 'k' })), 'gemini')
-  assert.equal(selectProviderName(env({ OPENAI_API_KEY: 'k' })), 'openai')
-  // With both, Gemini wins, so adding a Gemini key is enough to switch.
-  assert.equal(selectProviderName(env({ OPENAI_API_KEY: 'a', GEMINI_API_KEY: 'b' })), 'gemini')
-  // Explicit configuration beats key presence in both directions.
-  assert.equal(selectProviderName(env({ LOCK_PROVIDER: 'openai', GEMINI_API_KEY: 'b' })), 'openai')
-  assert.equal(selectProviderName(env({ LOCK_PROVIDER: 'gemini', OPENAI_API_KEY: 'a' })), 'gemini')
-  assert.equal(selectProviderName(env({})), 'openai')
-  assert.equal(describeProvider(env({ GEMINI_API_KEY: 'k' })).keyVariable, 'GEMINI_API_KEY')
+  // OpenRouter is the default, and a stray key from a previous provider does
+  // not quietly change that — a deployment talks to who it was told to.
+  assert.equal(selectProviderName(env({})), 'openrouter')
+  assert.equal(selectProviderName(env({ GEMINI_API_KEY: 'k' })), 'openrouter')
+  assert.equal(selectProviderName(env({ OPENAI_API_KEY: 'k' })), 'openrouter')
+  assert.equal(selectProviderName(env({ OPENAI_API_KEY: 'a', GEMINI_API_KEY: 'b' })), 'openrouter')
+  // The legacy providers stay reachable, but only by name.
+  assert.equal(selectProviderName(env({ LOCK_PROVIDER: 'openai' })), 'openai')
+  assert.equal(selectProviderName(env({ LOCK_PROVIDER: 'gemini' })), 'gemini')
+  assert.equal(selectProviderName(env({ LOCK_PROVIDER: 'OpenRouter' })), 'openrouter')
+  // An unrecognised value is not a reason to pick something else silently.
+  assert.equal(selectProviderName(env({ LOCK_PROVIDER: 'anthropic' })), 'openrouter')
+  assert.equal(describeProvider(env({})).keyVariable, 'OPENROUTER_API_KEY')
+  assert.equal(
+    describeProvider(env({ LOCK_PROVIDER: 'gemini' })).keyVariable,
+    'GEMINI_API_KEY',
+  )
 })
 
 /* ---- the contract above the seam is untouched ------------------------ */
@@ -262,7 +270,7 @@ test('a Gemini turn produces the same /api/decision response as any other', asyn
   const s = await mockGemini(okReply(turn))
   try {
     const provider = createProvider({
-      GEMINI_API_KEY: 'k', GEMINI_BASE_URL: s.url,
+      LOCK_PROVIDER: 'gemini', GEMINI_API_KEY: 'k', GEMINI_BASE_URL: s.url,
     } as NodeJS.ProcessEnv)
     const res = await handleTurn(
       { journey: null, event: { type: 'start', input: 'Should I get a cat?' } },

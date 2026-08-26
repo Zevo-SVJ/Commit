@@ -45,8 +45,15 @@ const fail = (
 ): HandlerResult => ({ status, body: { error: { code, message, retryable, detail } } })
 
 /** Error text stripped of anything that could carry a key. */
-const safeDetail = (text: string) =>
-  text.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***').slice(0, 220)
+const scrubKeys = (text: string) =>
+  text
+    // The longer prefix first, so an OpenRouter key is not left half-masked.
+    .replace(/sk-or-v[0-9]-[A-Za-z0-9_-]{8,}/g, 'sk-or-***')
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
+    .replace(/AQ\.[A-Za-z0-9_.-]{8,}/g, 'AQ.***')
+    .replace(/AIza[A-Za-z0-9_-]{8,}/g, 'AIza***')
+
+const safeDetail = (text: string) => scrubKeys(text).slice(0, 220)
 
 const uid = (p: string) =>
   `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -279,7 +286,7 @@ export async function handleTurn(
     return { status: 200, body: applyTurn(req.journey, req.event, turn, now) }
   } catch (err) {
     if (err instanceof InvalidModelOutput) {
-      console.error('[lock] invalid model output:', err.message)
+      console.error('[lock] invalid model output:', scrubKeys(err.message))
       return fail(
         502, 'invalid_response', 'That did not come back cleanly.', true,
         safeDetail(`model output rejected: ${err.message}`),
@@ -296,7 +303,9 @@ export async function handleTurn(
           providerCode: err.providerCode,
           retryAfter: err.retryAfter,
           requestId: err.requestId,
-          message: err.message,
+          // A provider can echo the credential back inside its own error
+          // message. The function log is not a safe place for it either.
+          message: scrubKeys(err.message),
         }),
       )
 
@@ -356,7 +365,10 @@ export async function handleTurn(
           return fail(502, 'upstream', 'Something went wrong.', true, detail)
       }
     }
-    console.error('[lock] unexpected error:', err)
+    console.error(
+      '[lock] unexpected error:',
+      scrubKeys(err instanceof Error ? `${err.name}: ${err.stack ?? err.message}` : String(err)),
+    )
     return fail(
       500, 'upstream', 'Something went wrong.', true,
       safeDetail(err instanceof Error ? `${err.name}: ${err.message}` : String(err)),

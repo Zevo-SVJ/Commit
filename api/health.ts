@@ -12,23 +12,36 @@
 /* Provider selection is duplicated here rather than imported: this file stays
    dependency-free so that, if it answers and /api/decision does not, the fault
    is the decision function's module graph and nothing else. */
-function providerName(): 'openai' | 'gemini' {
+function providerName(): 'openrouter' | 'openai' | 'gemini' {
   const explicit = (process.env.LOCK_PROVIDER ?? '').trim().toLowerCase()
-  if (explicit === 'openai' || explicit === 'gemini') return explicit
-  if (process.env.GEMINI_API_KEY) return 'gemini'
-  return 'openai'
+  if (explicit === 'openai' || explicit === 'gemini' || explicit === 'openrouter') return explicit
+  // No key sniffing. Selecting by "whichever key is present" is what made a
+  // missing OpenRouter key read as a missing OpenAI key, and described the
+  // wrong variable to the person trying to fix it.
+  return 'openrouter'
 }
 
 const PROVIDER = providerName()
 const IS_GEMINI = PROVIDER === 'gemini'
+const IS_ROUTER = PROVIDER === 'openrouter'
 
-const KEY_VAR = IS_GEMINI ? 'GEMINI_API_KEY' : 'OPENAI_API_KEY'
+const KEY_VAR = IS_GEMINI
+  ? 'GEMINI_API_KEY'
+  : IS_ROUTER
+    ? 'OPENROUTER_API_KEY'
+    : 'OPENAI_API_KEY'
 const OPENAI = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
 const GEMINI = (process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')
   .replace(/\/+$/, '')
+const ROUTER = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1')
+  .replace(/\/+$/, '')
+/* Kept in step with server/ai/openrouter.ts and server/ai/factory.ts by the
+   tests in test/openrouter.test.ts, which read both and compare. */
 const MODEL = IS_GEMINI
   ? process.env.GEMINI_MODEL || 'gemini-2.5-flash'
-  : process.env.LOCK_MODEL || 'gpt-4.1'
+  : IS_ROUTER
+    ? (process.env.LOCK_MODEL ?? '').trim() || 'openrouter/free'
+    : process.env.OPENAI_MODEL || 'gpt-4.1'
 
 /* Duplicated from gemini.ts on purpose: this file imports nothing, so that if
    it answers and /api/decision does not, the fault is the decision function's
@@ -49,21 +62,24 @@ function describeKey(raw: string) {
     prefix: raw ? raw.slice(0, 3) : null,
     hasWhitespace: raw !== trimmed,
     // AQ. auth keys are bearer tokens; AIza standard keys are API keys.
-    kind: trimmed.startsWith('AQ.')
-      ? 'google-auth-key'
-      : trimmed.startsWith('AIza')
-        ? 'google-standard-key'
-        : trimmed.startsWith('sk-')
-          ? 'openai-key'
-          : trimmed
-            ? 'unrecognised'
-            : null,
+    kind: trimmed.startsWith('sk-or-')
+      ? 'openrouter-key'
+      : trimmed.startsWith('AQ.')
+        ? 'google-auth-key'
+        : trimmed.startsWith('AIza')
+          ? 'google-standard-key'
+          : trimmed.startsWith('sk-')
+            ? 'openai-key'
+            : trimmed
+              ? 'unrecognised'
+              : null,
   }
 }
 
 /** Nothing key-shaped may travel back in a message. */
 function scrub(text: string): string {
   return text
+    .replace(/sk-or-v[0-9]-[A-Za-z0-9_\-]{8,}/g, 'sk-or-***')
     .replace(/AQ\.[A-Za-z0-9_.\-]{8,}/g, 'AQ.***')
     .replace(/AIza[A-Za-z0-9_\-]{8,}/g, 'AIza***')
     .replace(/sk-[A-Za-z0-9_\-]{8,}/g, 'sk-***')
@@ -83,6 +99,8 @@ type Probe = {
   link: string | null
   /** Models this key can actually use, when the provider will say. */
   models?: string[]
+  /** The model the deployment is configured to send. */
+  selectedModel?: string
   /** The provider's own words on the failing call, scrubbed. */
   upstream?: { status: number; code: string | null; message: string; url: string } | null
   /** Which credential transport was used. */
@@ -313,6 +331,162 @@ async function checkQuota(key: string): Promise<Partial<Probe>> {
   }
 }
 
+/* ---- OpenRouter ---------------------------------------------------- */
+
+/**
+ * Free, and it costs no tokens: OpenRouter answers this with the key's own
+ * metadata. It settles "is this key accepted" before anything is spent.
+ *
+ * A status other than 200 or 401 is treated as inconclusive rather than as a
+ * verdict — the generation call below is the authority, and reporting "key
+ * rejected" off a gateway hiccup would send someone to regenerate a key that
+ * was fine.
+ */
+async function checkRouterKey(key: string): Promise<Partial<Probe>> {
+  try {
+    const res = await fetch(`${ROUTER}/key`, {
+      headers: { authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (res.ok) return { keyAccepted: true }
+    if (res.status === 401 || res.status === 403) {
+      const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } }
+      return {
+        keyAccepted: false,
+        verdict: 'auth',
+        providerCode: 'unauthorized',
+        advice: `OpenRouter rejected the key. Check ${KEY_VAR} was pasted whole, with no trailing space, then redeploy — environment variables only apply to deployments made after they were added.`,
+        link: 'https://openrouter.ai/settings/keys',
+        upstream: {
+          status: res.status,
+          code: 'unauthorized',
+          message: scrub(body.error?.message ?? ''),
+          url: '/key',
+        },
+      }
+    }
+    return {}
+  } catch {
+    return { verdict: 'unreachable', advice: 'Could not reach OpenRouter from this function.' }
+  }
+}
+
+/**
+ * The smallest generation OpenRouter will accept: one token, one word of input.
+ * This is the only check that can tell a working deployment from one that will
+ * fail on the first real decision, so it runs — but it runs once, and it is
+ * the cheapest request the API has.
+ */
+async function checkRouterGeneration(key: string): Promise<Partial<Probe>> {
+  const url = `${ROUTER}/chat/completions`
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${key}`,
+        'content-type': 'application/json',
+        'X-Title': process.env.LOCK_SITE_NAME || 'Lock',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+      }),
+      signal: AbortSignal.timeout(15000),
+    })
+
+    const text = await res.text()
+    let parsed: { error?: { code?: unknown; type?: string; message?: string } } = {}
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      /* a non-JSON body is reported as-is below, scrubbed */
+    }
+
+    // OpenRouter can answer 200 and put the upstream provider's failure in the
+    // body, so success is "no error object", not "res.ok".
+    if (res.ok && !parsed.error) {
+      return {
+        keyAccepted: true, modelAvailable: true, canGenerate: true,
+        verdict: 'ok', advice: null, upstream: null,
+      }
+    }
+
+    const raw = parsed.error?.code
+    const code = parsed.error?.type ?? (raw === undefined || raw === null ? null : String(raw))
+    const message = parsed.error?.message ?? (parsed.error ? '' : text.slice(0, 300))
+    const status = res.ok ? Number(raw) || 502 : res.status
+    const upstream = { status, code, message: scrub(message), url: '/chat/completions' }
+    const base = { canGenerate: false, providerCode: code, upstream }
+
+    if (status === 401 || status === 403) {
+      return {
+        ...base, keyAccepted: false, verdict: 'auth',
+        advice: `OpenRouter rejected the key. Check ${KEY_VAR} was pasted whole, then redeploy.`,
+        link: 'https://openrouter.ai/settings/keys',
+      }
+    }
+    if (status === 402) {
+      return {
+        ...base, keyAccepted: true, verdict: 'quota',
+        advice:
+          'The key is valid but the account has no credit for this model. Either add credit, or set LOCK_MODEL to one of the free models listed below.',
+        link: 'https://openrouter.ai/settings/credits',
+      }
+    }
+    if (status === 429) {
+      const daily = /per day|daily|day\b/i.test(message)
+      return {
+        ...base, keyAccepted: true, verdict: daily ? 'quota' : 'rate_limited',
+        advice: daily
+          ? 'The free tier’s daily request allowance is spent. It resets on OpenRouter’s schedule; no payment is required.'
+          : 'A per-minute limit. This one clears on its own within a minute.',
+      }
+    }
+    if (status === 404 || /no endpoints found|not a valid model|no allowed providers/i.test(message)) {
+      return {
+        ...base, keyAccepted: true, modelAvailable: false, verdict: 'model_unavailable',
+        advice: `This key cannot reach "${MODEL}". Set LOCK_MODEL to one of the models listed below.`,
+      }
+    }
+    if (status === 400 || status === 422) {
+      return {
+        ...base, keyAccepted: true, verdict: 'bad_request',
+        advice: 'OpenRouter refused the request itself. The message below is its own wording.',
+      }
+    }
+    return { ...base, keyAccepted: true, verdict: 'upstream' }
+  } catch {
+    return { canGenerate: false, verdict: 'unreachable',
+      advice: 'Could not reach OpenRouter from this function.' }
+  }
+}
+
+/**
+ * The free slugs this key can choose from. Public, free, and only fetched when
+ * something already went wrong — at that point the list is the fix.
+ */
+async function routerFreeModels(key: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${ROUTER}/models`, {
+      headers: { authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return []
+    const data = (await res.json()) as {
+      data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }>
+    }
+    return (data.data ?? [])
+      .filter((m) => Number(m.pricing?.prompt ?? 1) === 0 && Number(m.pricing?.completion ?? 1) === 0)
+      .map((m) => m.id ?? '')
+      .filter(Boolean)
+      .sort()
+      .slice(0, 40)
+  } catch {
+    return []
+  }
+}
+
 /** A readable page for a browser. No CSS file, no imports — one self-contained view. */
 function renderHtml(body: any): string {
   const verdict: string | null = body.probe?.verdict ?? null
@@ -326,6 +500,8 @@ function renderHtml(body: any): string {
 
   const probeRows = body.probe
     ? [
+        row('Provider', body.provider),
+        row('Selected model', body.probe.selectedModel ?? body.model),
         row('Key accepted', body.probe.keyAccepted),
         row('Model available', body.probe.modelAvailable),
         row('Can generate', body.probe.canGenerate),
@@ -367,7 +543,9 @@ ${body.probe?.link ? `<p class="fix"><a href="${body.probe.link}" target="_blank
 <h2>Provider</h2>${probeRows}
 ${
   body.probe?.upstream
-    ? `<h2>What Google said</h2>${row('HTTP', body.probe.upstream.status)}${row(
+    ? `<h2>What ${
+        body.provider === 'gemini' ? 'Google' : body.provider === 'openrouter' ? 'OpenRouter' : 'OpenAI'
+      } said</h2>${row('HTTP', body.probe.upstream.status)}${row(
         'Code', body.probe.upstream.code,
       )}${row('Path', body.probe.upstream.url)}<p class="hint">${
         body.probe.upstream.message || '(no message)'
@@ -389,7 +567,7 @@ ${
     : ''
 }
 <h2>Credentials</h2>
-${['GEMINI_API_KEY', 'OPENAI_API_KEY']
+${['OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY']
   .map((name) => {
     const c = body.credentials[name]
     return c.present
@@ -406,7 +584,7 @@ ${
     ? body.configVars
         .map((v: any) => row(v.name, v.set ? 'set' : 'present but empty'))
         .join('')
-    : '<p class="hint">None. No GEMINI_, GOOGLE_, OPENAI_ or LOCK_ variable reached this deployment — environment variables only apply to deployments made after they were added.</p>'
+    : '<p class="hint">None. No OPENROUTER_, GEMINI_, GOOGLE_, OPENAI_ or LOCK_ variable reached this deployment — environment variables only apply to deployments made after they were added.</p>'
 }
 <h2>Deployment</h2>
 ${row('Provider', body.provider)}
@@ -430,6 +608,7 @@ export default async function handler(req: any, b?: any) {
      like a missing OpenAI key: with no GEMINI_API_KEY the selection falls back
      to openai, and the row then described the wrong variable entirely. */
   const credentials = {
+    OPENROUTER_API_KEY: describeKey(process.env.OPENROUTER_API_KEY ?? ''),
     GEMINI_API_KEY: describeKey(process.env.GEMINI_API_KEY ?? ''),
     OPENAI_API_KEY: describeKey(process.env.OPENAI_API_KEY ?? ''),
   }
@@ -437,7 +616,7 @@ export default async function handler(req: any, b?: any) {
   /* Names only, never values. This is what distinguishes "the variable is not
      set" from "it is set under a different name" or "set but empty". */
   const configVars = Object.keys(process.env)
-    .filter((n) => /^(GEMINI|GOOGLE|OPENAI|LOCK)_/i.test(n))
+    .filter((n) => /^(OPENROUTER|GEMINI|GOOGLE|OPENAI|LOCK)_/i.test(n))
     .sort()
     .map((n) => ({ name: n, set: (process.env[n] ?? '').trim().length > 0 }))
 
@@ -458,12 +637,27 @@ export default async function handler(req: any, b?: any) {
     probe = {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
       verdict: 'no_credential', providerCode: null, link: null,
+      selectedModel: MODEL,
       authMode: IS_GEMINI ? 'bearer' : undefined,
-      advice: `No ${KEY_VAR} reached this function. ${
-        credentials.GEMINI_API_KEY.present
-          ? 'GEMINI_API_KEY is set, so the selected provider is wrong — check LOCK_PROVIDER.'
-          : 'GEMINI_API_KEY is not set in this deployment. Environment variables only apply to deployments made after they were added, so add it and redeploy. The variables this function can see are listed below.'
-      }`,
+      advice: `${KEY_VAR} is not configured. No value for it reached this function. Environment variables only apply to deployments made after they were added, so add it in the project's settings and redeploy. The variables this function can see are listed below.`,
+    }
+  } else if (wantsProbe && key && IS_ROUTER) {
+    /* Two calls at most, and only the second costs anything: one token.
+       If the free key check already settled that the key is refused, the
+       generation call is skipped rather than sent to be refused again. */
+    const first = await checkRouterKey(key)
+    const second = first.keyAccepted === false ? {} : await checkRouterGeneration(key)
+    const merged = { ...first, ...second }
+    // The catalogue is free, but it is only the fix when something is broken.
+    const models =
+      merged.verdict && merged.verdict !== 'ok' && merged.keyAccepted !== false
+        ? { models: await routerFreeModels(key) }
+        : {}
+    probe = {
+      keyAccepted: null, modelAvailable: null, canGenerate: null,
+      verdict: 'unknown', providerCode: null, advice: null, link: null,
+      selectedModel: MODEL,
+      ...merged, ...models,
     }
   } else if (wantsProbe && key) {
     const first = IS_GEMINI ? await checkGeminiKey(key) : await checkKey(key)
@@ -477,6 +671,7 @@ export default async function handler(req: any, b?: any) {
     probe = {
       keyAccepted: null, modelAvailable: null, canGenerate: null,
       verdict: 'unknown', providerCode: null, advice: null, link: null,
+      selectedModel: MODEL,
       ...first, ...second, ...matrix,
     }
   }
@@ -492,7 +687,9 @@ export default async function handler(req: any, b?: any) {
       prefix: rawKey ? rawKey.slice(0, 3) : null,
       looksWellFormed: IS_GEMINI
         ? /^AIza[A-Za-z0-9_\-]{20,}$/.test(key)
-        : /^sk-[A-Za-z0-9_\-]{20,}$/.test(key),
+        : IS_ROUTER
+          ? /^sk-or-v[0-9]-[A-Za-z0-9_\-]{20,}$/.test(key)
+          : /^sk-[A-Za-z0-9_\-]{20,}$/.test(key),
       hasWhitespace: rawKey !== rawKey.trim(),
     },
     provider: PROVIDER,
@@ -501,7 +698,11 @@ export default async function handler(req: any, b?: any) {
     configVars,
     model: MODEL,
     baseUrlOverridden: Boolean(
-      IS_GEMINI ? process.env.GEMINI_BASE_URL : process.env.OPENAI_BASE_URL,
+      IS_GEMINI
+        ? process.env.GEMINI_BASE_URL
+        : IS_ROUTER
+          ? process.env.OPENROUTER_BASE_URL
+          : process.env.OPENAI_BASE_URL,
     ),
     probe,
     probeHint: wantsProbe ? null : 'add ?probe=1 to test the credential against the provider',

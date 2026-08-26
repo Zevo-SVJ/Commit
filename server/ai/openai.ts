@@ -97,7 +97,7 @@ async function attempt(
         authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
-        model: env.LOCK_MODEL || DEFAULT_MODEL,
+        model: env.OPENAI_MODEL || DEFAULT_MODEL,
         instructions: SYSTEM_PROMPT,
         input: [{ role: 'user', content: `${req.brief}\n\n${req.instruction}` }],
         // Deliberately low: Lock should be consistent, not creative.

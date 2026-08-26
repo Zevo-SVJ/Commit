@@ -85,13 +85,12 @@ test('with a Gemini key present, the deployed function calls Gemini and not Open
   const gemini = await provider('gemini')
   const openai = await provider('openai')
 
-  // Exactly the deployment's situation: the old OpenAI key is still set, and
-  // a Gemini key has been added. No LOCK_PROVIDER.
+  // The legacy providers are reachable, but only by asking for one by name.
   process.env.OPENAI_API_KEY = OPENAI_KEY
   process.env.GEMINI_API_KEY = GEMINI_KEY
   process.env.OPENAI_BASE_URL = openai.url
   process.env.GEMINI_BASE_URL = gemini.url
-  delete process.env.LOCK_PROVIDER
+  process.env.LOCK_PROVIDER = 'gemini'
 
   const fn = await bundled('api/decision.ts', 'prod-gemini')
   const h = await host(fn.default)
@@ -123,7 +122,7 @@ test('OpenAI is no longer required: the app works with only a Gemini key', async
   const gemini = await provider('gemini')
   delete process.env.OPENAI_API_KEY
   delete process.env.OPENAI_BASE_URL
-  delete process.env.LOCK_PROVIDER
+  process.env.LOCK_PROVIDER = 'gemini'
   process.env.GEMINI_API_KEY = GEMINI_KEY
   process.env.GEMINI_BASE_URL = gemini.url
 
@@ -152,7 +151,7 @@ test('the deployed probe reports gemini, and never the key', async () => {
   process.env.VERCEL_ENV = 'production'
   process.env.VERCEL_GIT_COMMIT_SHA = 'abcdef1234567890'
   process.env.VERCEL_REGION = 'cdg1'
-  delete process.env.LOCK_PROVIDER
+  process.env.LOCK_PROVIDER = 'gemini'
   delete process.env.GEMINI_MODEL
 
   const fn = await bundled('api/health.ts', 'prod-probe')
@@ -353,6 +352,7 @@ test('an AQ. credential reaches Google as a bearer token, end to end', async () 
 test('with no credential the probe says so, instead of "not probed"', async () => {
   delete process.env.GEMINI_API_KEY
   delete process.env.OPENAI_API_KEY
+  delete process.env.OPENROUTER_API_KEY
   delete process.env.LOCK_PROVIDER
 
   const fn = await bundled('api/health.ts', 'no-cred')
@@ -364,10 +364,13 @@ test('with no credential the probe says so, instead of "not probed"', async () =
     // reads as a missing flag rather than a missing credential.
     assert.notEqual(json.probe, null, 'the probe must run and report')
     assert.equal(json.probe.verdict, 'no_credential')
-    assert.match(json.probe.advice, /GEMINI_API_KEY is not set/)
+    // It must name the variable the deployment actually needs.
+    assert.match(json.probe.advice, /OPENROUTER_API_KEY is not configured/)
     assert.match(json.probe.advice, /redeploy/)
+    assert.equal(json.provider, 'openrouter')
 
-    // Both credentials are reported, not just the selected provider's.
+    // Every credential is reported, not just the selected provider's.
+    assert.equal(json.credentials.OPENROUTER_API_KEY.present, false)
     assert.equal(json.credentials.GEMINI_API_KEY.present, false)
     assert.equal(json.credentials.OPENAI_API_KEY.present, false)
     assert.ok(Array.isArray(json.configVars))
@@ -376,7 +379,8 @@ test('with no credential the probe says so, instead of "not probed"', async () =
 
 test('an AQ. credential is recognised as an auth key, and never returned', async () => {
   delete process.env.OPENAI_API_KEY
-  delete process.env.LOCK_PROVIDER
+  process.env.LOCK_PROVIDER = 'gemini'
+  delete process.env.OPENROUTER_API_KEY
   process.env.GEMINI_API_KEY = 'AQ.Ab8RN6REALSHAPEDAUTHKEYzzzzzzzzzzzzzzzzzzzzzzzzz'
 
   const fn = await bundled('api/health.ts', 'aq-kind')
@@ -395,6 +399,7 @@ test('an AQ. credential is recognised as an auth key, and never returned', async
 
 test('the probe flag is accepted in every form it might arrive in', async () => {
   process.env.GEMINI_API_KEY = 'AQ.Ab8RN6flagtestzzzzzzzzzzzzzzzzzzz'
+  process.env.LOCK_PROVIDER = 'gemini'
   delete process.env.OPENAI_API_KEY
   const fn = await bundled('api/health.ts', 'flag-forms')
   const h = await host(fn.default)

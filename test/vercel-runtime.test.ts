@@ -99,6 +99,7 @@ const START = {
 test('the bundled function runs under the Node signature and reaches the model', async () => {
   const openai = await mockOpenAI()
   const bundled = await bundleFunction('api/decision.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-test-not-a-real-key-000000000000'
   process.env.OPENAI_BASE_URL = openai.url
 
@@ -118,13 +119,14 @@ test('the bundled function runs under the Node signature and reaches the model',
     assert.equal(openai.calls(), 1, 'the model must actually have been called')
   } finally {
     host.close(); openai.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 })
 
 test('the bundled function also runs under the Web signature', async () => {
   const openai = await mockOpenAI()
   const bundled = await bundleFunction('api/decision.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-test-not-a-real-key-000000000000'
   process.env.OPENAI_BASE_URL = openai.url
 
@@ -143,13 +145,14 @@ test('the bundled function also runs under the Web signature', async () => {
     assert.equal(turn.step.kind, 'decision')
   } finally {
     openai.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 })
 
 test('every failure path still answers JSON, never an HTML error page', async () => {
   const bundled = await bundleFunction('api/decision.ts')
   delete process.env.OPENAI_API_KEY
+  delete process.env.LOCK_PROVIDER
   const mod = await import(`file://${bundled}?nokey`)
   const host = await hostNodeStyle(mod.default)
   try {
@@ -187,6 +190,7 @@ test('every failure path still answers JSON, never an HTML error page', async ()
 test('the function reads a body Vercel has already parsed', async () => {
   const openai = await mockOpenAI()
   const bundled = await bundleFunction('api/decision.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-test-not-a-real-key-000000000000'
   process.env.OPENAI_BASE_URL = openai.url
   const mod = await import(`file://${bundled}?parsed`)
@@ -212,12 +216,13 @@ test('the function reads a body Vercel has already parsed', async () => {
     assert.equal((await res.json()).step.kind, 'decision')
   } finally {
     server.close(); openai.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 })
 
 test('the health endpoint bundles, runs, and never leaks the key', async () => {
   const bundled = await bundleFunction('api/health.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-secret-value-that-must-not-appear-1234'
   const mod = await import(`file://${bundled}?health`)
   const host = await hostNodeStyle(mod.default)
@@ -282,6 +287,7 @@ function fakeProvider(handlers: {
 
 const probeOnce = async (base: string, key: string, tag: string) => {
   const bundled = await bundleFunction('api/health.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = key
   process.env.OPENAI_BASE_URL = base
   const mod = await import(`file://${bundled}?${tag}`)
@@ -291,7 +297,7 @@ const probeOnce = async (base: string, key: string, tag: string) => {
     return await res.json()
   } finally {
     host.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 }
 
@@ -361,6 +367,7 @@ test('health without ?probe=1 makes no provider call at all', async () => {
     responses: (res) => { called = true; res.writeHead(200).end('{}') },
   })
   const bundled = await bundleFunction('api/health.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-key-eeeeeeeeeeeeeeeeeeeeeeee'
   process.env.OPENAI_BASE_URL = p.url
   const mod = await import(`file://${bundled}?noprobe`)
@@ -371,7 +378,7 @@ test('health without ?probe=1 makes no provider call at all', async () => {
     assert.equal(called, false, 'the plain health check must cost nothing')
   } finally {
     host.close(); p.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 })
 
@@ -380,6 +387,7 @@ test('health without ?probe=1 makes no provider call at all', async () => {
 test('a browser gets a readable page; anything else gets JSON', async () => {
   const p = await fakeProvider({})
   const bundled = await bundleFunction('api/health.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-page-key-ffffffffffffffffffffff'
   process.env.OPENAI_BASE_URL = p.url
   const mod = await import(`file://${bundled}?page`)
@@ -405,7 +413,7 @@ test('a browser gets a readable page; anything else gets JSON', async () => {
     assert.match(forced.headers.get('content-type') ?? '', /application\/json/)
   } finally {
     host.close(); p.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 })
 
@@ -419,6 +427,7 @@ test('the rendered page names the fault in words', async () => {
     },
   })
   const bundled = await bundleFunction('api/health.ts')
+  process.env.LOCK_PROVIDER = 'openai'
   process.env.OPENAI_API_KEY = 'sk-quota-key-gggggggggggggggggggg'
   process.env.OPENAI_BASE_URL = p.url
   const mod = await import(`file://${bundled}?quotapage`)
@@ -432,7 +441,7 @@ test('the rendered page names the fault in words', async () => {
     assert.ok(!html.includes('sk-quota-key'))
   } finally {
     host.close(); p.close()
-    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_BASE_URL; delete process.env.LOCK_PROVIDER
   }
 })
 
