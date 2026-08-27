@@ -137,6 +137,10 @@ Both are short forms of `/api/health`, which is the real path. Opening
 405. In a browser you get a readable page; anything else gets JSON, and
 `?format=json` forces JSON either way.
 
+`/api/probe` is the same page as a real function file rather than a rewrite —
+use it if `/probe` ever 404s, since a rewrite is only as reliable as the
+platform's routing order.
+
 It reports whether a key reached the runtime, its length and prefix (never the
 key), whether it has stray whitespace, the model, the Node version, and the
 commit that is live. If `/api/health` answers and `/api/decision` does not, the

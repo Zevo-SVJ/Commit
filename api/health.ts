@@ -604,6 +604,10 @@ async function routerFreeModels(key: string): Promise<string[]> {
  */
 async function checkVerdict(): Promise<Partial<Probe>> {
   try {
+    /* The turn check has just generated. Free-model endpoints throttle hard
+       and per-model, so firing the second generation immediately is how this
+       page rate-limits itself and then reports the outage it caused. */
+    await new Promise((resolve) => setTimeout(resolve, 1200))
     const { runVerdict } = await import('../server/verdict.js')
     const result = await runVerdict({
       journey: { id: 'diagnostic', state: 'diagnostic_check', decision: 'Health check turn.' },
@@ -619,10 +623,18 @@ async function checkVerdict(): Promise<Partial<Probe>> {
       }
     }
     const err = (result.body as { error?: { code?: string; message?: string } }).error
+    const code = err?.code ?? 'unknown'
+    // A throttle says nothing about whether the engine works — reporting it as
+    // a failure sends someone to fix an engine that is fine.
+    const inconclusive = code === 'rate_limited'
     return {
-      verdictOk: false,
+      verdictOk: inconclusive ? null : false,
       verdictSample: null,
-      verdictError: scrub(`${err?.code ?? 'unknown'}: ${err?.message ?? ''}`),
+      verdictError: scrub(
+        inconclusive
+          ? `${code}: throttled by the provider, not a fault in the engine. Both models were tried. Wait a minute and reload.`
+          : `${code}: ${err?.message ?? ''}`,
+      ),
     }
   } catch (err) {
     return {

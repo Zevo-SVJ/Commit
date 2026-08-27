@@ -330,7 +330,8 @@ test('provider HTTP faults each keep their own code, status and retryability', a
      else would fail identically anywhere, so it costs one. */
   const cases: Array<[number, unknown, number, string, boolean, number]> = [
     [500, { error: { code: 500, message: 'Provider returned an error' } }, 502, 'upstream', true, 1],
-    [429, { error: { code: 429, message: 'Rate limit exceeded' } }, 429, 'rate_limited', true, 1],
+    // A 429 is refused before generation, so the other model is worth trying.
+    [429, { error: { code: 429, message: 'Rate limit exceeded' } }, 429, 'rate_limited', true, 2],
     [402, { error: { code: 402, message: 'Insufficient credits' } }, 402, 'quota', false, 1],
     [401, { error: { code: 401, message: 'No auth credentials found' } }, 401, 'auth', false, 1],
     [404, { error: { code: 404, message: 'No endpoints found' } }, 502, 'model_unavailable', false, 2],

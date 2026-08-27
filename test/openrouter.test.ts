@@ -445,7 +445,10 @@ test('nothing is retried except a short rate limit, and then only once', async (
     )
   } finally { broke.close() }
 
-  // A long retry-after is not worth waiting out either.
+  /* A throttled model hands over to the other one rather than waiting: free
+     endpoints throttle per model, so switching is both faster than sitting out
+     a retry-after and more likely to work. A 429 is refused before generation,
+     so the handover costs nothing for the failed attempt. */
   const later = await gateway(() => ({
     status: 429, headers: { 'retry-after': '90' },
     body: { error: { code: 429, message: 'Rate limit exceeded' } },
@@ -455,17 +458,16 @@ test('nothing is retried except a short rate limit, and then only once', async (
       OPENROUTER_API_KEY: KEY, OPENROUTER_BASE_URL: `${later.url}/api/v1`,
     } as NodeJS.ProcessEnv)
     await handleTurn(START, p)
-    assert.equal(
-      later.seen.filter((r) => r.url.endsWith('/chat/completions')).length, 1,
-      'a 90s wait must not be sat out',
-    )
+    const tried = later.seen.filter((r) => r.url.endsWith('/chat/completions'))
+    assert.equal(tried.length, 2, 'both models, and a 90s wait still never sat out')
+    assert.notEqual(tried[0].body.model, tried[1].body.model)
   } finally { later.close() }
 
-  // A one-second one is, exactly once.
+  // Waiting is only worth it once nothing else is left to try.
   let calls = 0
   const soon = await gateway(() => {
     calls++
-    return calls === 1
+    return calls <= 2
       ? { status: 429, headers: { 'retry-after': '1' }, body: { error: { code: 429, message: 'Rate limit exceeded' } } }
       : { status: 200, body: { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }] } }
   })
@@ -475,10 +477,8 @@ test('nothing is retried except a short rate limit, and then only once', async (
     } as NodeJS.ProcessEnv)
     const res = await handleTurn(START, p)
     assert.equal(res.status, 200)
-    assert.equal(
-      soon.seen.filter((r) => r.url.endsWith('/chat/completions')).length, 2,
-      'exactly one retry, never more',
-    )
+    const tried = soon.seen.filter((r) => r.url.endsWith('/chat/completions'))
+    assert.equal(tried.length, 3, 'both models, then one retry on the last — and no more')
   } finally { soon.close() }
 })
 

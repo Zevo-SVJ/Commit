@@ -332,17 +332,30 @@ export function openRouterBaseUrl(env: NodeJS.ProcessEnv = process.env): string 
 /**
  * Which failures a *different model* could plausibly fix.
  *
- * Only two: the model produced nothing usable (a safety verdict, prose, a
- * truncated object), or it refused the request shape / could not be reached.
- * Everything else — no credit, a rejected key, a rate limit, a timeout, a
- * cancellation — would fail identically on any model, so trying a second one
- * spends an allowance to learn nothing.
+ * The test is the same one that makes the fallback safe at all: nothing was
+ * generated, so trying another model cannot duplicate a user action or pay
+ * twice for one answer.
+ *
+ *  - unusable output (a safety verdict, prose, a truncated object) — the
+ *    request succeeded but produced nothing Lock can use;
+ *  - the model was unreachable or refused the request shape;
+ *  - a rate limit. On OpenRouter's free tier this is usually the upstream
+ *    provider for one model rather than the key, and a 429 is refused before
+ *    any generation — so the second model both might work and costs nothing
+ *    to try. A key-wide limit simply fails again, bounded at one extra call.
+ *
+ * Deliberately excluded: an empty balance and a rejected key (identical
+ * everywhere), a timeout and a cancellation (no budget left), and an upstream
+ * 5xx — that one may mean the model *did* run, which is exactly the case where
+ * a second attempt could bill twice.
  */
 function anotherModelCouldHelp(err: unknown): boolean {
   if (err instanceof InvalidModelOutput) return true
   return (
     err instanceof ProviderError &&
-    (err.kind === 'model_unavailable' || err.kind === 'bad_request')
+    (err.kind === 'model_unavailable' ||
+      err.kind === 'bad_request' ||
+      err.kind === 'rate_limited')
   )
 }
 
@@ -366,8 +379,13 @@ export function createOpenRouterProvider(env: NodeJS.ProcessEnv = process.env): 
     let last: unknown
     for (let i = 0; i < models.length; i++) {
       const { model, format } = models[i]
+      const isLast = i === models.length - 1
+      const call = (r: ProviderRequest, s: AbortSignal) => attempt(env, key, model, format, r, s)
       try {
-        return await withRetry((r, s) => attempt(env, key, model, format, r, s))(req, signal)
+        /* Waiting out a rate limit only makes sense when there is nothing else
+           to try. With another model available, switching is both faster and
+           more likely to work than sitting out the retry-after. */
+        return await (isLast ? withRetry(call) : call)(req, signal)
       } catch (err) {
         last = err
         const more = i < models.length - 1

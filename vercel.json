@@ -12,6 +12,9 @@
     },
     "api/verdict.ts": {
       "maxDuration": 60
+    },
+    "api/probe.ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [

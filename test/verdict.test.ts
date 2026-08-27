@@ -296,6 +296,39 @@ function gateway(body: (model: string) => unknown, status = 200) {
 
 const KEY = 'sk-or-v1-' + 'a1b2c3d4'.repeat(8)
 
+const CATALOGUE = {
+  data: [
+    { id: 'google/gemma-4-31b-it:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format'] },
+    { id: 'z-ai/glm-5.2:free', pricing: { prompt: '0', completion: '0' },
+      supported_parameters: ['response_format', 'structured_outputs'] },
+  ],
+}
+
+/** Answers each generation according to which model was asked for. */
+function gatewayByModel(reply: (model: string) => { status: number; body: unknown }) {
+  return new Promise<{ url: string; close: () => void }>((resolve) => {
+    const s = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (c) => chunks.push(c as Buffer))
+      req.on('end', () => {
+        if ((req.url ?? '').endsWith('/models')) {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          return res.end(JSON.stringify(CATALOGUE))
+        }
+        let body: any = {}
+        try { body = JSON.parse(Buffer.concat(chunks).toString()) } catch { /* ignore */ }
+        const out = reply(body.model ?? '')
+        res.writeHead(out.status, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(out.body))
+      })
+    })
+    s.listen(0, () =>
+      resolve({ url: `http://127.0.0.1:${(s.address() as any).port}`, close: () => s.close() }),
+    )
+  })
+}
+
 test('POST /api/verdict through the real bundle returns a real verdict', async () => {
   const g = await gateway(() => ({
     model: 'google/gemma-4-31b-it:free',
@@ -469,5 +502,110 @@ test('no credential and no Lovable dependency came across with the port', async 
   const pkg = JSON.parse(await readFile('package.json', 'utf8'))
   for (const dep of ['ai', '@ai-sdk/openai-compatible', 'zod', '@tanstack/react-start']) {
     assert.ok(!pkg.dependencies?.[dep], `${dep} must not have been dragged in`)
+  }
+})
+
+/* ---- surviving a free-tier rate limit ---------------------------------- */
+
+test('a rate-limited model falls through to the fallback, and validates the same schema', async () => {
+  /* Exactly what production reported: the turn engine works, then the verdict
+     generation is refused with 429 because free endpoints throttle per model.
+     A 429 is refused before anything is generated, so switching models cannot
+     duplicate a user action or pay twice — which is what makes this safe. */
+  const asked: string[] = []
+  const g = await gatewayByModel((model) => {
+    asked.push(model)
+    if (model === 'google/gemma-4-31b-it:free') {
+      return { status: 429, body: { error: { code: 429, message: 'Rate limit exceeded' } } }
+    }
+    return {
+      status: 200,
+      body: {
+        model,
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(UNCERTAIN) } }],
+      },
+    }
+  })
+
+  const before = { ...process.env }
+  process.env.OPENROUTER_API_KEY = KEY
+  process.env.OPENROUTER_BASE_URL = `${g.url}/api/v1`
+  delete process.env.LOCK_PROVIDER
+  try {
+    const { forgetCatalogue, createOpenRouterProvider } = await import('../server/ai/openrouter.js')
+    forgetCatalogue()
+    const res = await runVerdict(
+      { answer: 'I am really not sure yet.' },
+      createOpenRouterProvider(process.env),
+    )
+
+    assert.equal(res.status, 200, 'a throttled primary must not fail the turn')
+    assert.deepEqual(res.body, UNCERTAIN, 'and the fallback output passes the same validator')
+    assert.deepEqual(asked, ['google/gemma-4-31b-it:free', 'z-ai/glm-5.2:free'])
+    assert.equal(asked.length, 2, 'bounded: one fallback, never a third attempt')
+  } finally {
+    g.close()
+    process.env = before
+  }
+})
+
+test('when both models are throttled the engine reports it, and invents nothing', async () => {
+  const asked: string[] = []
+  const g = await gatewayByModel((model) => {
+    asked.push(model)
+    return { status: 429, body: { error: { code: 429, message: 'Rate limit exceeded' } } }
+  })
+
+  const before = { ...process.env }
+  process.env.OPENROUTER_API_KEY = KEY
+  process.env.OPENROUTER_BASE_URL = `${g.url}/api/v1`
+  delete process.env.LOCK_PROVIDER
+  try {
+    const { forgetCatalogue, createOpenRouterProvider } = await import('../server/ai/openrouter.js')
+    forgetCatalogue()
+    const res = await runVerdict({ answer: 'x' }, createOpenRouterProvider(process.env))
+
+    assert.equal(res.status, 429)
+    assert.equal((res.body as any).error.code, 'rate_limited')
+    assert.ok(!('verdict' in (res.body as object)), 'a failed generation is never a verdict')
+    // Both models tried; the last one may retry once if asked to wait briefly.
+    assert.ok(asked.length >= 2 && asked.length <= 3, `bounded attempts (${asked.length})`)
+    assert.equal(asked[0], 'google/gemma-4-31b-it:free')
+    assert.equal(asked[1], 'z-ai/glm-5.2:free')
+  } finally {
+    g.close()
+    process.env = before
+  }
+})
+
+test('the diagnostic is reachable without depending on a rewrite', async () => {
+  const vercel = JSON.parse(await readFile('vercel.json', 'utf8'))
+  assert.ok(vercel.functions['api/probe.ts'], 'a real function, not only a rewrite')
+  assert.ok(
+    vercel.rewrites.some((r: any) => r.source === '/probe'),
+    'the short path stays for convenience',
+  )
+
+  const g = await gateway(() => ({
+    choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(COMMITTED) } }],
+  }))
+  const before = { ...process.env }
+  process.env.OPENROUTER_API_KEY = KEY
+  process.env.OPENROUTER_BASE_URL = `${g.url}/api/v1`
+  try {
+    const fn = await bundled('api/probe.ts', 'probe-file')
+    const h = await host(fn.default)
+    try {
+      // The path alone turns the probe on — no query string, no rewrite.
+      const res = await fetch(`${h.url}/api/probe`)
+      assert.equal(res.status, 200)
+      const json = await res.json()
+      assert.notEqual(json.probe, null, '/api/probe must run the probe by itself')
+      assert.equal(json.provider, 'openrouter')
+      assert.ok(!JSON.stringify(json).includes(KEY))
+    } finally { h.close() }
+  } finally {
+    g.close()
+    process.env = before
   }
 })

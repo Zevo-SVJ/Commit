@@ -203,8 +203,13 @@ test('the fallback runs only when nothing was generated', async () => {
   assert.equal(await never(500, { error: { code: 500, message: 'upstream boom' } }), 1)
   assert.equal(await never(402, { error: { code: 402, message: 'Insufficient credits' } }), 1)
   assert.equal(await never(401, { error: { code: 401, message: 'No auth credentials' } }), 1)
-  // A rate limit with a long wait is not retried and not fallen back from.
-  assert.equal(await never(429, { error: { code: 429, message: 'Rate limit exceeded' } }), 2)
+  /* A rate limit is the exception, and for the same reason the whole fallback
+     is safe: it is refused before anything is generated, so a second model
+     costs nothing for the failed attempt and may well work — free endpoints
+     throttle per model, not only per key. Bounded at one extra model, plus at
+     most one short retry on the last one. */
+  const throttled = await never(429, { error: { code: 429, message: 'Rate limit exceeded' } })
+  assert.ok(throttled >= 2 && throttled <= 3, `bounded attempts (${throttled})`)
 
   // Pinning one model removes the fallback entirely.
   const g = await gateway(() => said(PRODUCTION_RESPONSE))
