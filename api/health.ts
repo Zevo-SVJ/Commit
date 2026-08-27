@@ -135,6 +135,12 @@ type Probe = {
   contractError?: string | null
   /** Where the model choice came from: a pin, the catalogue, or the built-in order. */
   resolvedFrom?: string
+  /** Whether the verdict engine produced a schema-valid Lock decision object. */
+  verdictOk?: boolean | null
+  /** The verdict it produced, so a real generation is visible rather than claimed. */
+  verdictSample?: { verdict: string; action: string; confidence: number } | null
+  /** Why the verdict check failed, when it did. */
+  verdictError?: string | null
   /** The provider's own words on the failing call, scrubbed. */
   upstream?: { status: number; code: string | null; message: string; url: string } | null
   /** Which credential transport was used. */
@@ -587,6 +593,46 @@ async function routerFreeModels(key: string): Promise<string[]> {
   }
 }
 
+/**
+ * One real verdict, through the real engine.
+ *
+ * The turn check above proves Lock can produce a journey step. This proves the
+ * decision engine ported from lock-ai-logic can produce a valid Lock decision
+ * object — a different prompt and a different schema, so passing one says
+ * nothing about the other. Same cost discipline: one generation, only under
+ * ?probe=1, and only once the credential has already checked out.
+ */
+async function checkVerdict(): Promise<Partial<Probe>> {
+  try {
+    const { runVerdict } = await import('../server/verdict.js')
+    const result = await runVerdict({
+      journey: { id: 'diagnostic', state: 'diagnostic_check', decision: 'Health check turn.' },
+      history: [{ role: 'lock', content: 'Diagnostic: confirm the decision engine responds.' }],
+      answer: 'Yes, proceed with the diagnostic check.',
+    })
+    if (result.status === 200 && 'verdict' in result.body) {
+      const d = result.body
+      return {
+        verdictOk: true,
+        verdictSample: { verdict: d.verdict, action: d.action, confidence: d.confidence },
+        verdictError: null,
+      }
+    }
+    const err = (result.body as { error?: { code?: string; message?: string } }).error
+    return {
+      verdictOk: false,
+      verdictSample: null,
+      verdictError: scrub(`${err?.code ?? 'unknown'}: ${err?.message ?? ''}`),
+    }
+  } catch (err) {
+    return {
+      verdictOk: false,
+      verdictSample: null,
+      verdictError: scrub(err instanceof Error ? err.message : String(err)),
+    }
+  }
+}
+
 /** A readable page for a browser. No CSS file, no imports — one self-contained view. */
 function renderHtml(body: any): string {
   const verdict: string | null = body.probe?.verdict ?? null
@@ -608,6 +654,13 @@ function renderHtml(body: any): string {
         row('Response format sent', body.probe.responseFormat),
         row('Can generate', body.probe.canGenerate),
         row('Returns valid Lock JSON', body.probe.returnsValidLockJson),
+        row('Verdict engine', body.probe.verdictOk),
+        row(
+          'Verdict sample',
+          body.probe.verdictSample
+            ? `${body.probe.verdictSample.verdict} / ${body.probe.verdictSample.action}`
+            : null,
+        ),
         row('Answered by', body.probe.answeredBy),
         row('Fallback model', (body.probe.modelsConfigured ?? [])[1] ?? null),
         row('Chosen from', body.probe.resolvedFrom),
@@ -665,6 +718,11 @@ ${
           row(`${m.auth} · ${m.version}`, `${m.status} ${m.code ?? ''}`.trim()),
         )
         .join('')}`
+    : ''
+}
+${
+  body.probe?.verdictError
+    ? `<h2>Why the verdict failed</h2><p class="hint">${body.probe.verdictError}</p>`
     : ''
 }
 ${
@@ -793,7 +851,13 @@ export default async function handler(req: any, b?: any) {
         ? {}
         : await checkRouterContract(key, model, chain[0]?.format ?? routerFormat(model))
 
-    const merged = { ...credential, ...capability, ...contract }
+    /* Only once a turn has actually validated: if the model cannot produce a
+       journey step, it will not produce a verdict either, and the second
+       generation would spend an allowance to learn nothing. */
+    const verdict =
+      (contract as Partial<Probe>).returnsValidLockJson === true ? await checkVerdict() : {}
+
+    const merged = { ...credential, ...capability, ...contract, ...verdict }
     // The catalogue is free, but it is only the fix when something is broken.
     const models =
       merged.verdict && merged.verdict !== 'ok' && merged.keyAccepted !== false

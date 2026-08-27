@@ -9,9 +9,16 @@
     },
     "api/health.ts": {
       "maxDuration": 60
+    },
+    "api/verdict.ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
+    {
+      "source": "/api/public/decision",
+      "destination": "/api/verdict"
+    },
     {
       "source": "/probe",
       "destination": "/api/health?probe=1"

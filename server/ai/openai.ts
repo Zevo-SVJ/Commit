@@ -105,7 +105,7 @@ async function attempt(
       },
       body: JSON.stringify({
         model: env.OPENAI_MODEL || DEFAULT_MODEL,
-        instructions: SYSTEM_PROMPT,
+        instructions: req.system ?? SYSTEM_PROMPT,
         input: [{ role: 'user', content: `${req.brief}\n\n${req.instruction}` }],
         // Deliberately low: Lock should be consistent, not creative.
         temperature: 0.35,
@@ -115,9 +115,9 @@ async function attempt(
         text: {
           format: {
             type: 'json_schema',
-            name: 'lock_turn',
+            name: req.schema?.name ?? 'lock_turn',
             strict: true,
-            schema: TURN_JSON_SCHEMA,
+            schema: req.schema?.schema ?? TURN_JSON_SCHEMA,
           },
         },
       }),

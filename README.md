@@ -57,6 +57,7 @@ Lock talks to **OpenRouter**. One variable is required.
 | `OPENROUTER_BASE_URL` | Optional. Gateway or regional endpoint. |
 | `LOCK_PROVIDER` | `openrouter` (default), or `openai` / `gemini` to opt into a legacy provider. |
 | `LOCK_CANCEL_ON_DISCONNECT` | Set to `0` to keep generating after the browser hangs up. On by default. |
+| `LOCK_ALLOWED_ORIGINS` | Optional, comma-separated. Opens `/api/verdict` to named cross-origin callers. Closed by default. |
 | `OPENAI_API_KEY` · `OPENAI_MODEL` | Only read when `LOCK_PROVIDER=openai`. |
 | `GEMINI_API_KEY` · `GEMINI_MODEL` | Only read when `LOCK_PROVIDER=gemini`. |
 
@@ -144,6 +145,42 @@ fault is in the decision function's module graph rather than in routing.
 **Environment variables only apply to deployments made after they were added.**
 Adding `OPENROUTER_API_KEY` to an existing project does nothing until you redeploy —
 `key.present: false` on a live `/api/health` is that, almost every time.
+
+## The verdict engine
+
+Lock asks a model two different questions.
+
+`POST /api/decision` produces the next **step** of a journey — the question to
+ask, or the decision to commit to. That is what fills the screen.
+
+`POST /api/verdict` judges one **answer**: is it usable, and should the journey
+move. It came from the `lock-ai-logic` backend and now lives here, running on
+the same OpenRouter credential, the same catalogue-resolved model and the same
+timeout ladder as everything else. `shared/verdict.ts` is the contract both
+sides import.
+
+```
+{ journey?: { id, state, decision }, history?: [{ role, content }], answer }
+  -> { verdict, reason, action, confidence, next_state, followup }
+```
+
+Only `answer` is required. Errors come back as
+`{ error: { code, message } }` with `code` one of `invalid_request`,
+`ai_unavailable`, `ai_not_configured`, `invalid_ai_output`, `rate_limited`,
+`internal_error`. `/api/public/decision` is rewritten here, so a client written
+against the original deployment keeps working.
+
+The client calls it when a user answers a question **in their own words**:
+
+- `ask_followup` — the engine's own follow-up becomes the next question, in the
+  same card every other question uses. The turn engine is not called at all.
+- `abort` — the journey stops in Lock's existing error screen.
+- `continue` / `finalize` — the answer goes to the turn engine as before.
+
+Tapped options skip it: an option is unambiguous by construction, and gating one
+would spend a generation to learn nothing. If the verdict engine is unavailable
+the answer falls through to the turn engine, so adding the gate cannot make Lock
+less reliable than it was without it.
 
 ### Timeouts
 

@@ -608,10 +608,24 @@ test('the deployed probe makes one real generation request and reports what came
     if (r.url.endsWith('/key')) {
       return { status: 200, body: { data: { label: 'lock', is_free_tier: true } } }
     }
-    // A real, validatable turn — the probe now runs the real validator on it.
+    /* The probe asks two different questions. Answering both with a journey
+       turn is what a real misconfiguration looks like, so the stand-in answers
+       each with the contract it was actually asked for. */
+    const asked = r.body?.messages?.[0]?.content ?? ''
+    const isVerdict = /decision engine inside Lock/.test(asked)
     return { status: 200, body: {
       model: 'google/gemma-4-31b-it:free',
-      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(TURN) } }],
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: JSON.stringify(
+            isVerdict
+              ? { verdict: 'hold', reason: 'Diagnostic turn.', action: 'continue',
+                  confidence: 0.8, next_state: null, followup: null }
+              : TURN,
+          ),
+        },
+      }],
     } }
   })
   await withEnv(
@@ -653,9 +667,17 @@ test('the deployed probe makes one real generation request and reports what came
         // And it says where the choice came from, so a stale pin is visible.
         assert.match(json.probe.resolvedFrom, /catalogue/)
 
-        // A real generation request was made, and it was the smallest one.
+        /* Two generations, and exactly two: one journey turn and one verdict.
+           They are different prompts against different schemas, so passing one
+           says nothing about the other — which is the whole reason the probe
+           runs both rather than claiming coverage it does not have. */
         const generation = g.seen.filter((s) => s.url.endsWith('/chat/completions'))
-        assert.equal(generation.length, 1, 'exactly one generation, no more')
+        assert.equal(generation.length, 2, 'one turn check and one verdict check')
+        assert.ok(
+          generation.some((r) => /decision engine inside Lock/.test(r.body.messages[0].content)),
+          'the verdict engine is exercised, not assumed',
+        )
+        assert.equal(json.probe.verdictOk, true)
         assert.equal(generation[0].method, 'POST')
         assert.ok(generation[0].body.max_tokens <= 400, 'the probe stays small')
         assert.equal(generation[0].body.model, 'google/gemma-4-31b-it:free')
@@ -884,7 +906,7 @@ test('the probe and the provider agree on which model is configured', async () =
         assert.equal(json.probe.returnsValidLockJson, true)
         assert.equal(json.probe.resolvedFrom, 'LOCK_MODEL')
         const generation = g.seen.filter((s) => s.url.endsWith('/chat/completions'))
-        assert.equal(generation.length, 1, 'the probe generates once, never more')
+        assert.equal(generation.length, 2, 'the turn check and the verdict check')
         assert.equal(generation[0].body.model, 'qwen/qwen3-8b:free')
         assert.equal(generation[0].body.response_format.type, 'json_object')
       } finally { h.close(); g.close() }

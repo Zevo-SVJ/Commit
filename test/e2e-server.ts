@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { handleTurn } from '../server/handler.js'
+import { handleVerdict } from '../server/verdict.js'
 import { ProviderError, type Provider } from '../server/ai/provider.js'
 
 const PORT = Number(process.env.PORT ?? 4300)
@@ -112,6 +113,51 @@ const SCRIPTS: Record<string, unknown[]> = {
   ],
 }
 
+/**
+ * The verdict engine's stand-in.
+ *
+ * Not a canned response: it reads the answer the user actually typed and
+ * judges it, so a committed answer and a non-committal one take genuinely
+ * different paths through the real client. `verdictMode` forces a failure so
+ * the degradation path can be driven too.
+ */
+let verdictMode = 'auto'
+let verdictHits = 0
+
+const HEDGE = /\b(not sure|unsure|maybe|i think|probably|dunno|don't know|do not know|it depends|perhaps|possibly|no idea)\b/i
+
+const verdictProvider: Provider = async (req) => {
+  if (verdictMode === 'down') throw new ProviderError('gateway down', 'upstream')
+  if (verdictMode === 'ratelimited') throw new ProviderError('slow down', 'rate_limited')
+  if (verdictMode === 'garbage') return { verdict: 'maybe', reason: '', action: 'nope' }
+
+  const answer = req.brief.split("# User's latest answer").pop()?.trim() ?? ''
+  if (HEDGE.test(answer) || answer.length < 12) {
+    return {
+      verdict: 'hold',
+      reason: 'The answer is non-committal; the deciding constraint is still unstated.',
+      action: 'ask_followup',
+      confidence: 0.38,
+      next_state: null,
+      followup: 'What would have to be true for you to commit to this?',
+    }
+  }
+  if (/\b(abort|stop|cancel this|forget it)\b/i.test(answer)) {
+    return {
+      verdict: 'reject', reason: 'The answer ends the journey.', action: 'abort',
+      confidence: 0.9, next_state: null, followup: null,
+    }
+  }
+  return {
+    verdict: 'lock',
+    reason: 'The answer states a clear commitment.',
+    action: 'continue',
+    confidence: 0.88,
+    next_state: 'advance',
+    followup: null,
+  }
+}
+
 let mode = 'multi'
 let calls = 0
 /** Every /api/decision request, so the browser tests can prove there are no duplicates. */
@@ -151,6 +197,8 @@ createServer(async (req, res) => {
 
   if (url.pathname === '/__mode') {
     mode = url.searchParams.get('mode') ?? 'multi'
+    verdictMode = url.searchParams.get('verdict') ?? 'auto'
+    verdictHits = 0
     calls = Number(url.searchParams.get('calls') ?? 0)
     slowMs = Number(url.searchParams.get('ms') ?? 1200)
     apiHits = 0
@@ -163,7 +211,19 @@ createServer(async (req, res) => {
   if (url.pathname === '/__hits') {
     res
       .writeHead(200, { 'content-type': 'application/json' })
-      .end(JSON.stringify({ apiHits, providerHits, cancelled }))
+      .end(JSON.stringify({ apiHits, providerHits, cancelled, verdictHits }))
+    return
+  }
+
+  if (url.pathname === '/api/verdict') {
+    verdictHits++
+    const chunks: Buffer[] = []
+    for await (const c of req) chunks.push(c as Buffer)
+    let body: unknown = null
+    try { body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null } catch { body = null }
+    const result = await handleVerdict(body, verdictProvider)
+    res.writeHead(result.status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    res.end(JSON.stringify(result.body))
     return
   }
 

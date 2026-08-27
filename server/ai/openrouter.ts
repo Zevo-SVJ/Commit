@@ -309,12 +309,15 @@ export function openRouterModel(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** The request body fragment for a given format. */
-export function responseFormatFor(format: ResponseFormat): Record<string, unknown> {
+export function responseFormatFor(
+  format: ResponseFormat,
+  contract: { name: string; schema: unknown } = { name: 'lock_turn', schema: TURN_JSON_SCHEMA },
+): Record<string, unknown> {
   if (format === 'json_schema') {
     return {
       response_format: {
         type: 'json_schema',
-        json_schema: { name: 'lock_turn', strict: true, schema: TURN_JSON_SCHEMA },
+        json_schema: { name: contract.name, strict: true, schema: contract.schema },
       },
     }
   }
@@ -407,7 +410,7 @@ async function attempt(
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: req.system ?? SYSTEM_PROMPT },
           { role: 'user', content: `${req.brief}\n\n${req.instruction}` },
         ],
         // Deliberately low: Lock should be consistent, not creative.
@@ -419,7 +422,7 @@ async function attempt(
         max_tokens: 4096,
         // Only ever the form this model actually supports. Asking a model
         // that cannot enforce a schema to enforce one is a 400.
-        ...responseFormatFor(format),
+        ...responseFormatFor(format, req.schema),
       }),
     })
 

@@ -259,11 +259,11 @@ async function attempt(
         ...authHeaders(key, authModeFor(key, env.GEMINI_AUTH_MODE)),
       },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: req.system ?? SYSTEM_PROMPT }] },
         contents: [{ role: 'user', parts: [{ text: `${req.brief}\n\n${req.instruction}` }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          responseSchema: GEMINI_TURN_SCHEMA,
+          responseSchema: req.schema ? toGeminiSchema(req.schema.schema) : GEMINI_TURN_SCHEMA,
           // Deliberately low: Lock should be consistent, not creative.
           temperature: 0.35,
           /*

@@ -142,6 +142,16 @@ export interface ProviderRequest {
   /** The conversation so far, already compressed into a compact brief. */
   brief: string
   instruction: string
+  /**
+   * A different contract than the journey turn.
+   *
+   * Lock asks a model two distinct questions — "what is the next step of this
+   * journey" and "is this answer usable" — and they need different system
+   * prompts and different schemas. Left unset, the turn contract is used, so
+   * every existing caller is unaffected.
+   */
+  system?: string
+  schema?: { name: string; schema: unknown }
 }
 
 /** Injectable so the handler can be tested without a live model. */

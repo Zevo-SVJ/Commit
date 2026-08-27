@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DecisionJourney, Step, TurnEvent } from '../../shared/types.ts'
 import { LockRequestError, takeTurn, type LockError } from './api.ts'
+import { takeVerdict, verdictRequestFor } from './verdict.ts'
+import type { LockVerdictResponse } from '../../shared/verdict.ts'
 import { load, save } from './persistence.ts'
 
 /**
@@ -28,6 +30,38 @@ export interface JourneyState {
   settling: boolean
   /** A turn is in flight underneath a confirmation that is still playing. */
   turnPending: boolean
+  /**
+   * The last judgement the verdict engine made on a free-text answer.
+   *
+   * Recorded rather than rendered: Lock's screens are unchanged. It is here so
+   * the decision that drove the flow is inspectable, and so a follow-up
+   * question can be traced back to the verdict that asked for it.
+   */
+  lastVerdict: LockVerdictResponse | null
+}
+
+/**
+ * Asks the verdict engine to judge one free-text answer.
+ *
+ * Never throws. A verdict that cannot be obtained is not a reason to block the
+ * journey — the turn engine still runs, and if the model is genuinely down it
+ * fails there, in Lock's existing error path, with a better message than this
+ * one could give. Adding the gate can therefore never make Lock less reliable
+ * than it was without it.
+ */
+async function runGate(
+  journey: DecisionJourney,
+  step: Step | null,
+  text: string,
+  signal: AbortSignal,
+): Promise<LockVerdictResponse | null> {
+  try {
+    return await takeVerdict(verdictRequestFor(journey, step, text), signal)
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') throw err
+    console.warn('[lock] verdict unavailable; continuing to the turn')
+    return null
+  }
 }
 
 /**
@@ -53,6 +87,7 @@ const INITIAL: JourneyState = {
   error: null,
   settling: false,
   turnPending: false,
+  lastVerdict: null,
 }
 
 export function useJourney() {
@@ -96,6 +131,7 @@ export function useJourney() {
       error: null,
       settling: false,
       turnPending: false,
+      lastVerdict: null,
     })
   }, [])
 
@@ -111,7 +147,7 @@ export function useJourney() {
     async (
       journey: DecisionJourney | null,
       event: TurnEvent,
-      opts: { silent?: boolean } = {},
+      opts: { silent?: boolean; gate?: Step | null } = {},
     ) => {
       const key = actionKey(journey, event)
       // The same tap, twice. One user action is one provider request.
@@ -130,6 +166,66 @@ export function useJourney() {
       }
 
       try {
+        /* The verdict engine, when this is a free-text answer.
+           It judges the answer before Lock spends a turn on it: an answer that
+           needs more from the user becomes a follow-up question instead of a
+           new step, and an unusable one stops the journey rather than dragging
+           it forward. Tapped options skip it — they are unambiguous by
+           construction, and gating them would spend a generation to learn
+           nothing. */
+        if (opts.gate !== undefined && journey && event.type === 'answer') {
+          const verdict = await runGate(journey, opts.gate, event.text, controller.signal)
+          if (!alive.current || mine !== seq.current) return
+
+          if (verdict) {
+            setState((s) => ({ ...s, lastVerdict: verdict }))
+
+            if (verdict.action === 'ask_followup' && verdict.followup) {
+              // The follow-up is the model's own words, rendered by the same
+              // question card every other question uses.
+              const asked = event.question ?? ''
+              const nextJourney: DecisionJourney = {
+                ...journey,
+                exchanges: [...journey.exchanges, { question: asked, answer: event.text }].slice(-10),
+              }
+              setState((s) => ({
+                ...s,
+                phase: 'step',
+                journey: nextJourney,
+                step: {
+                  kind: 'question',
+                  id: `q_${Date.now().toString(36)}`,
+                  prompt: verdict.followup!,
+                  contradiction: null,
+                  framing: null,
+                  options: [],
+                  allowFree: true,
+                },
+                error: null,
+                settling: false,
+                turnPending: false,
+              }))
+              return
+            }
+
+            if (verdict.action === 'abort') {
+              setState((s) => ({
+                ...s,
+                phase: 'error',
+                error: {
+                  code: 'invalid_response',
+                  message: 'Lock cannot take that forward.',
+                  retryable: true,
+                  diagnostic: `verdict ${verdict.verdict} · ${verdict.reason}`,
+                },
+                settling: false,
+                turnPending: false,
+              }))
+              return
+            }
+          }
+        }
+
         const turn = await takeTurn(journey, event, controller.signal)
         if (!alive.current || mine !== seq.current) return
         setState((s) => ({
@@ -186,7 +282,14 @@ export function useJourney() {
       // The question travels with the answer so the journey can record the
       // pair verbatim, which is what stops it being asked again.
       const question = state.step?.kind === 'question' ? state.step.prompt : undefined
-      void run(state.journey, { type: 'answer', text, question })
+      // A tapped option is already unambiguous; only prose is worth judging.
+      const tapped =
+        state.step?.kind === 'question' && state.step.options.includes(text)
+      void run(
+        state.journey,
+        { type: 'answer', text, question },
+        tapped ? {} : { gate: state.step },
+      )
     },
     [run, state.journey, state.step],
   )
